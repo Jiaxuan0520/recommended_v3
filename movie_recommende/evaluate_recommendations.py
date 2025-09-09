@@ -35,17 +35,14 @@ K_NEIGHBORS = 20  # for item-based KNN similarity neighborhood
 # =============================================================
 
 def load_datasets():
-	movies = pd.read_csv('movies.csv')
 	imdb = pd.read_csv('imdb_top_1000.csv')
 	user_ratings = pd.read_csv('user_movie_rating.csv')
-	# ensure Movie_ID exists in merged data
-	if 'Movie_ID' not in movies.columns:
-		movies['Movie_ID'] = range(len(movies))
-	merged = pd.merge(movies, imdb, on='Series_Title', how='inner')
-	# Preserve Movie_ID
-	if 'Movie_ID' not in merged.columns and 'Movie_ID' in movies.columns:
-		merged = pd.merge(movies[['Movie_ID', 'Series_Title']], merged, on='Series_Title', how='inner')
-	return merged, user_ratings
+	# Validate required columns
+	if 'Series_ID' not in imdb.columns or 'Series_Title' not in imdb.columns:
+		raise ValueError('imdb_top_1000.csv must include Series_ID and Series_Title')
+	if 'Series_ID' not in user_ratings.columns:
+		raise ValueError('user_movie_rating.csv must include Series_ID')
+	return imdb, user_ratings
 
 # =============================================================
 # Helpers
@@ -66,15 +63,15 @@ def build_content_matrix(merged):
 
 
 def build_item_similarity_knn(user_ratings, merged, k=K_NEIGHBORS):
-	# Build user-item matrix for available Movie_IDs
-	movie_ids = merged['Movie_ID'].unique()
-	ratings = user_ratings[user_ratings['Movie_ID'].isin(movie_ids)].copy()
+	# Build user-item matrix for available Series_IDs
+	series_ids = merged['Series_ID'].unique()
+	ratings = user_ratings[user_ratings['Series_ID'].isin(series_ids)].copy()
 	if ratings.empty:
 		return None, None
-	user_item = ratings.pivot_table(index='User_ID', columns='Movie_ID', values='Rating')
+	user_item = ratings.pivot_table(index='User_ID', columns='Series_ID', values='Rating')
 	user_item_filled = user_item.fillna(0.0)
-	# Item-based KNN on item vectors (users as features)
-	knn = NearestNeighbors(metric='cosine', algorithm='brute')
+	# Item-based KNN on item vectors (users as features) with Euclidean distance
+	knn = NearestNeighbors(metric='euclidean', algorithm='brute')
 	knn.fit(user_item_filled.T)
 	return knn, user_item
 
@@ -105,10 +102,10 @@ def compute_popularity_and_recency(merged, ratings_df=None):
 		recency = np.exp(-year_diff / 20.0)
 		rec[title] = float(np.clip(recency, 0.0, 1.0))
 	# Interaction-based popularity boost if ratings provided
-	if ratings_df is not None and not ratings_df.empty and 'Movie_ID' in merged.columns:
-		counts = ratings_df['Movie_ID'].value_counts()
-		for movie_id, cnt in counts.items():
-			match = merged[merged['Movie_ID'] == movie_id]
+	if ratings_df is not None and not ratings_df.empty and 'Series_ID' in merged.columns:
+		counts = ratings_df['Series_ID'].value_counts()
+		for series_id, cnt in counts.items():
+			match = merged[merged['Series_ID'] == series_id]
 			if not match.empty:
 				t = match.iloc[0]['Series_Title']
 				boost = min(cnt / 100.0, 1.0)
@@ -126,22 +123,23 @@ def predict_content_scores(merged, content_matrix):
 	return sim, index_by_title
 
 
-def predict_collaborative_scores(knn, user_item, target_movie_id, k=K_NEIGHBORS):
+def predict_collaborative_scores(knn, user_item, target_series_id, k=K_NEIGHBORS):
 	# For an item, get its k nearest neighbors by cosine distance
 	# Return dict: neighbor_movie_id -> similarity
 	if knn is None or user_item is None:
 		return {}
 	item_vectors = user_item.fillna(0.0).T
-	if target_movie_id not in item_vectors.index:
+	if target_series_id not in item_vectors.index:
 		return {}
-	item_idx = item_vectors.index.get_loc(target_movie_id)
+	item_idx = item_vectors.index.get_loc(target_series_id)
 	distances, indices = knn.kneighbors(item_vectors.iloc[[item_idx]], n_neighbors=min(k+1, len(item_vectors)))
 	neighbors = {}
 	for d, idx in zip(distances[0], indices[0]):
 		neighbor_movie = item_vectors.index[idx]
-		if neighbor_movie == target_movie_id:
+		if neighbor_movie == target_series_id:
 			continue
-		neighbors[int(neighbor_movie)] = 1.0 - float(d)  # cosine similarity
+		# Convert Euclidean distance to similarity-like score
+		neighbors[int(neighbor_movie)] = 1.0 / (1.0 + float(d))
 	return neighbors
 
 
@@ -176,8 +174,8 @@ def evaluate_models():
 	genre_col, rating_col, year_col, votes_col = get_cols(merged)
 
 	# Filter ratings to those movies present in merged
-	present_ids = set(merged['Movie_ID'].unique())
-	ratings = ratings[ratings['Movie_ID'].isin(present_ids)].copy()
+	present_ids = set(merged['Series_ID'].unique())
+	ratings = ratings[ratings['Series_ID'].isin(present_ids)].copy()
 
 	# Split BEFORE building models to avoid leakage
 	train_df, test_df = split_per_user(ratings)
@@ -193,14 +191,14 @@ def evaluate_models():
 	popularity, recency = compute_popularity_and_recency(merged, train_df)
 
 	# Build quick lookups
-	movieid_to_title = dict(merged[['Movie_ID', 'Series_Title']].values)
+	movieid_to_title = dict(merged[['Series_ID', 'Series_Title']].values)
 	title_to_movieid = {v: k for k, v in movieid_to_title.items()}
 	user_train = train_df.groupby('User_ID')
 
 	# Baselines for collaborative filtering (bias terms)
 	global_mean = float(train_df['Rating'].mean()) if not train_df.empty else 7.0
 	user_mean = train_df.groupby('User_ID')['Rating'].mean().to_dict()
-	item_mean = train_df.groupby('Movie_ID')['Rating'].mean().to_dict()
+	item_mean = train_df.groupby('Series_ID')['Rating'].mean().to_dict()
 
 	# Precompute user profile vectors for content-based: average similarity to liked items
 	user_content_pref = {}
@@ -235,7 +233,7 @@ def evaluate_models():
 	# Iterate over test set rows
 	for _, row in test_df.iterrows():
 		user = row['User_ID']
-		movie_id = int(row['Movie_ID'])
+		movie_id = int(row['Series_ID'])
 		true_rating = float(row['Rating'])
 		true_label = 1 if true_rating >= RATING_THRESHOLD else 0
 		title = movieid_to_title.get(movie_id)
@@ -268,7 +266,7 @@ def evaluate_models():
 			collab_score = np.nan
 		# Fallback to item mean if no info
 		if np.isnan(collab_score):
-			item_ratings = train_df[train_df['Movie_ID'] == movie_id]['Rating']
+			item_ratings = train_df[train_df['Series_ID'] == movie_id]['Rating']
 			collab_score = item_ratings.mean() if not item_ratings.empty else ratings['Rating'].mean()
 
 		# Map content similarity directly to rating scale without IMDB rating blending
