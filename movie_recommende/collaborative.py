@@ -44,7 +44,7 @@ def _fit_item_knn(user_item: pd.DataFrame):
 
 
 def _nearest_items(model, item_vectors, target_series_id: int, k: int = 10):
-    if model is None or item_vectors is None or target_movie_id not in item_vectors.index:
+    if model is None or item_vectors is None or target_series_id not in item_vectors.index:
         return {}
     idx = item_vectors.index.get_loc(target_series_id)
     distances, indices = model.kneighbors(item_vectors.iloc[[idx]], n_neighbors=min(k + 1, len(item_vectors)))
