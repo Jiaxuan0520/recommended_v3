@@ -3,7 +3,6 @@ import numpy as np
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics.pairwise import cosine_similarity
 import streamlit as st
-from content_based import find_genre_column
 
 # Minimal, pure item-based KNN collaborative filtering without extra calculations
 
@@ -92,25 +91,26 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
     if not neighbors:
         return None
 
-    # Filter neighbors by genre overlap with the target movie
-    genre_col = find_genre_column(merged_df)
-    target_row = merged_df[merged_df['Movie_ID'] == target_movie_id]
-    if target_row.empty:
-        return None
-    t_genres = set([g.strip().lower() for g in str(target_row.iloc[0].get(genre_col, '')).split(',') if g.strip()])
-    if t_genres:
-        neighbor_ids = list(neighbors.keys())
-        genre_map = merged_df[['Movie_ID', genre_col]].drop_duplicates()
-        genre_map = genre_map[genre_map['Movie_ID'].isin(neighbor_ids)]
-        def has_overlap(s):
-            gs = set([g.strip().lower() for g in str(s).split(',') if g.strip()])
-            return len(t_genres & gs) > 0
-        genre_map['genre_overlap'] = genre_map[genre_col].apply(has_overlap)
-        allowed = set(genre_map[genre_map['genre_overlap']]['Movie_ID'].tolist())
-        neighbors = {mid: sim for mid, sim in neighbors.items() if mid in allowed}
-        if not neighbors:
-            # if no same-genre neighbors, keep original neighbors (fallback)
-            neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
+    # Optional: restrict neighbors to those sharing at least one genre with target movie
+    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else ('Genre' if 'Genre' in merged_df.columns else None)
+    if genre_col is not None:
+        target_row = merged_df[merged_df['Movie_ID'] == target_movie_id]
+        if not target_row.empty:
+            def parse_genres(s: str):
+                return set([g.strip().lower() for g in str(s).split(',') if g and str(g).strip()])
+            target_genres = parse_genres(target_row.iloc[0].get(genre_col, ''))
+            if target_genres:
+                neighbor_ids = list(neighbors.keys())
+                genre_map = merged_df[['Movie_ID', genre_col]].drop_duplicates()
+                genre_map = genre_map[genre_map['Movie_ID'].isin(neighbor_ids)]
+                allowed = set()
+                for _, r in genre_map.iterrows():
+                    gs = parse_genres(r.get(genre_col, ''))
+                    if target_genres & gs:
+                        allowed.add(int(r['Movie_ID']))
+                filtered = {mid: sim for mid, sim in neighbors.items() if mid in allowed}
+                if filtered:
+                    neighbors = filtered
 
     # Compute average user rating and count per movie
     agg = ratings_df.groupby('Movie_ID')['Rating'].agg(['mean', 'count']).reset_index()
@@ -131,14 +131,17 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
     cand = cand.head(top_n)
 
     # Map to titles and attach metadata for display
-    result = cand.merge(merged_df[['Movie_ID', 'Series_Title', genre_col]], on='Movie_ID', how='left')
+    result = cand.merge(merged_df[['Movie_ID', 'Series_Title']], on='Movie_ID', how='left')
     rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else ('Rating' if 'Rating' in merged_df.columns else None)
-    cols = ['Movie_ID', 'Series_Title', genre_col] + ([rating_col] if rating_col else [])
+    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else ('Genre' if 'Genre' in merged_df.columns else None)
+    cols = ['Movie_ID', 'Series_Title'] + ([genre_col] if genre_col else []) + ([rating_col] if rating_col else [])
     result = result.merge(merged_df[cols].drop_duplicates(['Series_Title','Movie_ID']), on=['Series_Title','Movie_ID'], how='left')
 
     # Final order preserved from ranking
     # Drop Movie_ID for cleaner display in app
-    display_cols = ['Series_Title', genre_col]
+    display_cols = ['Series_Title']
+    if genre_col:
+        display_cols.append(genre_col)
     if rating_col:
         display_cols.append(rating_col)
     display_cols += ['Avg_User_Rating', 'Num_Ratings', 'Similarity']
