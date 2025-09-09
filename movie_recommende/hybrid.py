@@ -88,10 +88,10 @@ class LinearHybridRecommender:
             popularity = (float(rating) * np.log10(votes_val + 1.0)) / 10.0
             pop[title] = float(np.clip(popularity, 0.0, 1.0))
         # Optional: light boost based on user interactions if available
-        if self.user_ratings_df is not None and 'Series_ID' in self.merged_df.columns and 'Series_ID' in self.user_ratings_df.columns:
-            interaction_counts = self.user_ratings_df['Series_ID'].value_counts()
-            for sid, cnt in interaction_counts.items():
-                match = self.merged_df[self.merged_df['Series_ID'] == sid]
+        if self.user_ratings_df is not None and 'Movie_ID' in self.merged_df.columns:
+            interaction_counts = self.user_ratings_df['Movie_ID'].value_counts()
+            for mid, cnt in interaction_counts.items():
+                match = self.merged_df[self.merged_df['Movie_ID'] == mid]
                 if not match.empty:
                     t = match.iloc[0]['Series_Title']
                     boost = min(cnt / 100.0, 1.0)
