@@ -60,26 +60,29 @@ class LinearHybridRecommender:
 
     def _collab_scores(self, target_movie, top_n):
         scores = {}
-        if not target_movie:
-            return scores
-        # Let the CF function handle data availability; don't gate on preloaded ratings
-        results = collaborative_knn(self.merged_df, target_movie, top_n=top_n * 3)
-        if results is not None and not results.empty:
-            has_similarity = 'Similarity' in results.columns
-            has_avg_rating = 'Avg_User_Rating' in results.columns
-            for _, row in results.iterrows():
-                sim_val = float(row['Similarity']) if has_similarity and pd.notna(row.get('Similarity')) else np.nan
-                avg_val = float(row['Avg_User_Rating']) if has_avg_rating and pd.notna(row.get('Avg_User_Rating')) else np.nan
-                avg_norm = (avg_val / 10.0) if pd.notna(avg_val) else np.nan
-                if pd.notna(sim_val) and pd.notna(avg_norm):
-                    val = 0.7 * sim_val + 0.3 * avg_norm
-                elif pd.notna(sim_val):
-                    val = sim_val
-                elif pd.notna(avg_norm):
-                    val = avg_norm
+        if target_movie:
+            results = collaborative_knn(self.merged_df, target_movie, top_n=top_n * 3)
+            if results is not None and not results.empty:
+                # Prefer normalized user rating score if available
+                if 'User_Rating_Score' in results.columns and results['User_Rating_Score'].notna().any():
+                    for _, row in results.iterrows():
+                        val = row.get('User_Rating_Score', np.nan)
+                        if pd.notna(val):
+                            scores[row['Series_Title']] = float(val)
+                        elif 'Similarity' in results.columns:
+                            scores[row['Series_Title']] = float(row.get('Similarity', 0.0))
+                        else:
+                            scores[row['Series_Title']] = 0.0
+                elif 'Similarity' in results.columns:
+                    for _, row in results.iterrows():
+                        scores[row['Series_Title']] = float(row['Similarity'])
+                elif 'Avg_User_Rating' in results.columns:
+                    for _, row in results.iterrows():
+                        avg = row.get('Avg_User_Rating', np.nan)
+                        scores[row['Series_Title']] = float(avg) / 10.0 if pd.notna(avg) else 0.0
                 else:
-                    val = 0.0
-                scores[row['Series_Title']] = float(val)
+                    for _, row in results.iterrows():
+                        scores[row['Series_Title']] = 0.0
         return scores
 
     def _popularity_scores(self):
