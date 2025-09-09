@@ -3,7 +3,7 @@ import numpy as np
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics.pairwise import cosine_similarity
 import streamlit as st
-from content_based import create_content_features
+from content_based import find_genre_column
 
 # Minimal, pure item-based KNN collaborative filtering without extra calculations
 
@@ -58,40 +58,6 @@ def _nearest_items(model, item_vectors, target_movie_id: int, k: int = 10):
     return neighbors
 
 
-def _find_surrogate_target_id(merged_df: pd.DataFrame, target_movie_id: int, item_vectors) -> int:
-    """Use content similarity to find the closest movie that has user ratings.
-
-    This bridges the gap when the selected target movie has no ratings in the
-    user-item matrix by picking the most similar movie (by content) that does.
-    """
-    try:
-        if item_vectors is None or 'Movie_ID' not in merged_df.columns:
-            return None
-        # Locate target row in merged_df
-        target_rows = merged_df[merged_df['Movie_ID'] == target_movie_id]
-        if target_rows.empty:
-            return None
-        target_idx = target_rows.index[0]
-
-        # Build content features once
-        content_features = create_content_features(merged_df)
-        target_loc = merged_df.index.get_loc(target_idx)
-        target_vec = content_features[target_loc].reshape(1, -1)
-        sims = cosine_similarity(target_vec, content_features).flatten()
-        order = list(np.argsort(-sims))
-
-        # Pick the most similar movie that exists in the ratings index
-        for i in order:
-            if i == target_loc:
-                continue
-            candidate_id = int(merged_df.iloc[i]['Movie_ID'])
-            if candidate_id in item_vectors.index:
-                return candidate_id
-    except Exception:
-        return None
-    return None
-
-
 @st.cache_data
 def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8, k_neighbors: int = 20):
     """Item-based CF using user ratings for similarity; rank neighbors by average user rating.
@@ -123,21 +89,28 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
     user_item = _build_user_item_matrix(ratings_df, merged_df['Movie_ID'].values)
     model, item_vectors = _fit_item_knn(user_item)
     neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
-    # Bridge: if the exact target has no ratings, try a content-similar surrogate
-    if not neighbors and item_vectors is not None and target_movie_id not in item_vectors.index:
-        surrogate_id = _find_surrogate_target_id(merged_df, target_movie_id, item_vectors)
-        if surrogate_id is not None:
-            neighbors = _nearest_items(model, item_vectors, surrogate_id, k=k_neighbors)
-    # Last resort: if still nothing, fall back to globally top-rated by users
     if not neighbors:
-        agg_global = ratings_df.groupby('Movie_ID')['Rating'].agg(['mean', 'count']).reset_index()
-        agg_global = agg_global.rename(columns={'mean': 'Avg_User_Rating', 'count': 'Num_Ratings'})
-        top_global = agg_global.sort_values(['Avg_User_Rating', 'Num_Ratings'], ascending=[False, False]).head(top_n)
-        result = top_global.merge(merged_df[['Movie_ID', 'Series_Title']], on='Movie_ID', how='left')
-        result['Similarity'] = 0.0
-        # Align output columns with standard path
-        display_cols = ['Series_Title', 'Avg_User_Rating', 'Num_Ratings', 'Similarity']
-        return result[display_cols]
+        return None
+
+    # Filter neighbors by genre overlap with the target movie
+    genre_col = find_genre_column(merged_df)
+    target_row = merged_df[merged_df['Movie_ID'] == target_movie_id]
+    if target_row.empty:
+        return None
+    t_genres = set([g.strip().lower() for g in str(target_row.iloc[0].get(genre_col, '')).split(',') if g.strip()])
+    if t_genres:
+        neighbor_ids = list(neighbors.keys())
+        genre_map = merged_df[['Movie_ID', genre_col]].drop_duplicates()
+        genre_map = genre_map[genre_map['Movie_ID'].isin(neighbor_ids)]
+        def has_overlap(s):
+            gs = set([g.strip().lower() for g in str(s).split(',') if g.strip()])
+            return len(t_genres & gs) > 0
+        genre_map['genre_overlap'] = genre_map[genre_col].apply(has_overlap)
+        allowed = set(genre_map[genre_map['genre_overlap']]['Movie_ID'].tolist())
+        neighbors = {mid: sim for mid, sim in neighbors.items() if mid in allowed}
+        if not neighbors:
+            # if no same-genre neighbors, keep original neighbors (fallback)
+            neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
 
     # Compute average user rating and count per movie
     agg = ratings_df.groupby('Movie_ID')['Rating'].agg(['mean', 'count']).reset_index()
@@ -158,17 +131,14 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
     cand = cand.head(top_n)
 
     # Map to titles and attach metadata for display
-    result = cand.merge(merged_df[['Movie_ID', 'Series_Title']], on='Movie_ID', how='left')
+    result = cand.merge(merged_df[['Movie_ID', 'Series_Title', genre_col]], on='Movie_ID', how='left')
     rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else ('Rating' if 'Rating' in merged_df.columns else None)
-    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else ('Genre' if 'Genre' in merged_df.columns else None)
-    cols = ['Movie_ID', 'Series_Title'] + ([genre_col] if genre_col else []) + ([rating_col] if rating_col else [])
+    cols = ['Movie_ID', 'Series_Title', genre_col] + ([rating_col] if rating_col else [])
     result = result.merge(merged_df[cols].drop_duplicates(['Series_Title','Movie_ID']), on=['Series_Title','Movie_ID'], how='left')
 
     # Final order preserved from ranking
     # Drop Movie_ID for cleaner display in app
-    display_cols = ['Series_Title']
-    if genre_col:
-        display_cols.append(genre_col)
+    display_cols = ['Series_Title', genre_col]
     if rating_col:
         display_cols.append(rating_col)
     display_cols += ['Avg_User_Rating', 'Num_Ratings', 'Similarity']
