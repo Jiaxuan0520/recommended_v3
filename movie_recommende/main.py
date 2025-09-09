@@ -52,59 +52,45 @@ def load_csv_from_github(file_url, file_name):
 
 @st.cache_data
 def load_and_prepare_data():
-    """Load CSVs from GitHub and prepare data for recommendation algorithms - silent version"""
+    """Load IMDB and user ratings CSVs from GitHub and prepare data (no movies.csv)."""
     
     # GitHub raw file URLs - replace with your actual repository URLs
     github_base_url = "https://raw.githubusercontent.com/yy9449/recommender/main/movie_recommende/"
     
     # File URLs
-    movies_url = github_base_url + "movies.csv"
     imdb_url = github_base_url + "imdb_top_1000.csv"
     user_ratings_url = github_base_url + "user_movie_rating.csv"
     
     # Silent loading - show minimal progress info
     with st.spinner("Loading datasets..."):
-        movies_df = load_csv_from_github(movies_url, "movies.csv")
         imdb_df = load_csv_from_github(imdb_url, "imdb_top_1000.csv")
         user_ratings_df = load_csv_from_github(user_ratings_url, "user_movie_rating.csv")
     
     # Check if required files loaded successfully
-    if movies_df is None or imdb_df is None:
-        return None, None, "❌ Required CSV files (movies.csv, imdb_top_1000.csv) could not be loaded from GitHub"
+    if imdb_df is None:
+        return None, None, "❌ Required CSV file (imdb_top_1000.csv) could not be loaded from GitHub"
     
     # Store user ratings in session state for other functions to access - silent
     if user_ratings_df is not None:
         st.session_state['user_ratings_df'] = user_ratings_df
-        # Silent success - no message
     else:
-        # Only show warning if explicitly needed
         if 'user_ratings_df' in st.session_state:
             del st.session_state['user_ratings_df']
     
     try:
         # Validate required columns
-        if 'Series_Title' not in movies_df.columns or 'Series_Title' not in imdb_df.columns:
-            return None, None, "❌ Missing Series_Title column in one or both datasets"
+        if 'Series_Title' not in imdb_df.columns:
+            return None, None, "❌ Missing Series_Title column in imdb_top_1000.csv"
         
-        # Check if movies.csv has Movie_ID
-        if 'Movie_ID' not in movies_df.columns:
-            movies_df['Movie_ID'] = range(len(movies_df))
-            # Silent addition - no info message
+        # Use IMDB data directly; alias Series_ID -> Movie_ID for compatibility
+        merged_df = imdb_df.copy()
+        if 'Movie_ID' not in merged_df.columns and 'Series_ID' in merged_df.columns:
+            merged_df['Movie_ID'] = merged_df['Series_ID']
         
-        # Merge on Series_Title
-        merged_df = pd.merge(movies_df, imdb_df, on="Series_Title", how="inner")
-        merged_df = merged_df.drop_duplicates(subset="Series_Title")
-        
-        # Ensure Movie_ID is preserved in merged dataset
-        if 'Movie_ID' not in merged_df.columns and 'Movie_ID' in movies_df.columns:
-            # Re-merge to preserve Movie_ID
-            merged_df = pd.merge(movies_df[['Movie_ID', 'Series_Title']], merged_df, on="Series_Title", how="inner")
-        
-        # Silent success - no success message
         return merged_df, user_ratings_df, None
         
     except Exception as e:
-        return None, None, f"❌ Error merging datasets: {str(e)}"
+        return None, None, f"❌ Error preparing dataset: {str(e)}"
 
 # Alternative: Try local files if GitHub fails
 @st.cache_data
@@ -114,15 +100,8 @@ def load_local_fallback():
         import os
         
         # Try different possible file paths
-        movies_df = None
         imdb_df = None
         user_ratings_df = None
-        
-        # Check for movies.csv
-        for path in ["movies.csv", "./movies.csv", "data/movies.csv", "../movies.csv"]:
-            if os.path.exists(path):
-                movies_df = pd.read_csv(path)
-                break
         
         # Check for imdb_top_1000.csv
         for path in ["imdb_top_1000.csv", "./imdb_top_1000.csv", "data/imdb_top_1000.csv", "../imdb_top_1000.csv"]:
@@ -136,24 +115,17 @@ def load_local_fallback():
                 user_ratings_df = pd.read_csv(path)
                 break
         
-        if movies_df is None or imdb_df is None:
-            return None, None, "Required CSV files not found locally either"
+        if imdb_df is None:
+            return None, None, "Required CSV file imdb_top_1000.csv not found locally"
         
         # Store user ratings in session state - silent
         if user_ratings_df is not None:
             st.session_state['user_ratings_df'] = user_ratings_df
         
-        # Check if movies.csv has Movie_ID
-        if 'Movie_ID' not in movies_df.columns:
-            movies_df['Movie_ID'] = range(len(movies_df))
-        
-        # Merge on Series_Title
-        merged_df = pd.merge(movies_df, imdb_df, on="Series_Title", how="inner")
-        merged_df = merged_df.drop_duplicates(subset="Series_Title")
-        
-        # Ensure Movie_ID is preserved in merged dataset
-        if 'Movie_ID' not in merged_df.columns and 'Movie_ID' in movies_df.columns:
-            merged_df = pd.merge(movies_df[['Movie_ID', 'Series_Title']], merged_df, on="Series_Title", how="inner")
+        # Use IMDB data directly; alias Series_ID -> Movie_ID
+        merged_df = imdb_df.copy()
+        if 'Movie_ID' not in merged_df.columns and 'Series_ID' in merged_df.columns:
+            merged_df['Movie_ID'] = merged_df['Series_ID']
         
         return merged_df, user_ratings_df, None
         
@@ -282,9 +254,8 @@ def main():
             3. Ensure the repository is public or accessible
             
             **Required Files:**
-            - `movies.csv`: Movie metadata with Movie_ID and Series_Title columns
-            - `imdb_top_1000.csv`: IMDB movie data with ratings and genres  
-            - `user_movie_rating.csv`: Optional user ratings file
+            - `imdb_top_1000.csv`: IMDB movie data with IDs, titles, ratings, genres
+            - `user_movie_rating.csv`: Optional user ratings file (User_ID, Series_ID, Rating)
             
             **GitHub URL Format:**
             ```
@@ -370,8 +341,6 @@ def main():
             st.write(f"**🎬 {movie_title}**")
             if 'Movie_ID' in movie_info.index:
                 st.write(f"**🆔 Movie ID:** {movie_info['Movie_ID']}")
-            if 'Series_ID' in movie_info.index:
-                st.write(f"**🆔 Series ID:** {movie_info['Series_ID']}")
             if genre_col in movie_info:
                 st.write(f"**🎭 Genre:** {movie_info[genre_col]}")
             if rating_col in movie_info:
@@ -438,17 +407,6 @@ def main():
                     # Add ranking
                     display_results.insert(0, 'Rank', range(1, len(display_results) + 1))
                     
-                    # Add Series_ID if available
-                    if 'Series_ID' in merged_df.columns:
-                        series_ids = []
-                        for _, row in results.iterrows():
-                            movie_info = merged_df[merged_df['Series_Title'] == row['Series_Title']]
-                            if not movie_info.empty:
-                                series_ids.append(movie_info.iloc[0]['Series_ID'])
-                            else:
-                                series_ids.append('N/A')
-                        display_results.insert(1, 'Series ID', series_ids)
-                    
                     # Add Movie_ID if available
                     if 'Movie_ID' in merged_df.columns:
                         movie_ids = []
@@ -458,8 +416,7 @@ def main():
                                 movie_ids.append(movie_info.iloc[0]['Movie_ID'])
                             else:
                                 movie_ids.append('N/A')
-                        insert_index = 2 if 'Series_ID' in merged_df.columns else 1
-                        display_results.insert(insert_index, 'Movie ID', movie_ids)
+                        display_results.insert(1, 'Movie ID', movie_ids)
                     
                     st.dataframe(
                         display_results,
@@ -467,7 +424,6 @@ def main():
                         hide_index=True,
                         column_config={
                             "Rank": st.column_config.NumberColumn("Rank", width="small"),
-                            "Series ID": st.column_config.NumberColumn("Series ID", width="small"),
                             "Movie ID": st.column_config.NumberColumn("Movie ID", width="small"),
                             "Movie Title": st.column_config.TextColumn("Movie Title", width="large"),
                             "Genre": st.column_config.TextColumn("Genre", width="medium"),
