@@ -59,6 +59,57 @@ def _nearest_items(model, item_vectors, target_movie_id: int, k: int = 10):
     return neighbors
 
 
+def _fallback_by_user_average(merged_df: pd.DataFrame, ratings_df: pd.DataFrame, target_movie_id: int, top_n: int = 8):
+    if ratings_df is None or ratings_df.empty:
+        return None
+
+    # Compute user average rating and count
+    user_agg = ratings_df.groupby('Movie_ID')['Rating'].agg(['mean', 'count']).rename(columns={'mean': 'User_Avg_Rating', 'count': 'User_Rating_Count'})
+
+    # Determine genre column and target primary genre
+    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else ('Genre' if 'Genre' in merged_df.columns else None)
+    primary_genre = None
+    if genre_col is not None:
+        tg = merged_df[merged_df['Movie_ID'] == target_movie_id]
+        if not tg.empty:
+            g = str(tg.iloc[0].get(genre_col, '') or '')
+            primary_genre = g.split(',')[0].strip().lower() if g else None
+
+    # Candidate movies that have ratings
+    candidates = merged_df[merged_df['Movie_ID'].isin(user_agg.index)].copy()
+    # Exclude the target movie
+    candidates = candidates[candidates['Movie_ID'] != target_movie_id]
+
+    # Prefer same primary genre if available
+    if primary_genre and genre_col is not None:
+        same_genre_mask = candidates[genre_col].astype(str).str.lower().str.contains(primary_genre, na=False)
+        preferred = candidates[same_genre_mask]
+        if preferred.empty:
+            preferred = candidates
+    else:
+        preferred = candidates
+
+    # Attach aggregates
+    preferred = preferred.merge(user_agg, left_on='Movie_ID', right_index=True, how='left')
+    preferred['User_Rating_Score'] = (preferred['User_Avg_Rating'] / 10.0).clip(lower=0.0, upper=1.0)
+
+    # Sort by user averages, then count
+    preferred = preferred.sort_values(by=['User_Avg_Rating', 'User_Rating_Count'], ascending=[False, False])
+
+    # Select columns to return
+    rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else ('Rating' if 'Rating' in merged_df.columns else None)
+    base_cols = ['Series_Title']
+    if genre_col:
+        base_cols.append(genre_col)
+    if rating_col:
+        base_cols.append(rating_col)
+    base_cols += ['User_Avg_Rating', 'User_Rating_Count', 'User_Rating_Score']
+    out = preferred[base_cols].drop_duplicates('Series_Title').head(top_n)
+    if out.empty:
+        return None
+    return out
+
+
 @st.cache_data
 def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8, k_neighbors: int = 20):
     if target_movie is None or not isinstance(target_movie, str) or target_movie.strip() == '':
@@ -83,7 +134,9 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
     model, item_vectors = _fit_item_knn(user_item)
     neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
     if not neighbors:
-        return None
+        # Fallback: recommend by user average ratings, preferring same genre
+        fallback = _fallback_by_user_average(merged_df, ratings_df, target_movie_id, top_n=top_n)
+        return fallback
 
     # Compute user-based aggregate ratings for ranking
     user_agg = None
