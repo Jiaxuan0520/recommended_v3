@@ -21,6 +21,18 @@ class LinearHybridRecommender:
         self.gamma = 0.1  # Popularity
         self.delta = 0.1  # Recency
 
+    def _minmax_normalize(self, score_map, candidates):
+        if not candidates:
+            return {}
+        vals = [float(score_map.get(t, 0.0)) for t in candidates]
+        if not vals:
+            return {t: 0.0 for t in candidates}
+        vmin = float(np.min(vals))
+        vmax = float(np.max(vals))
+        if vmax > vmin:
+            return {t: (float(score_map.get(t, 0.0)) - vmin) / (vmax - vmin) for t in candidates}
+        return {t: 0.0 for t in candidates}
+
     def _content_scores(self, target_movie, genre, top_n):
         scores = {}
         if target_movie:
@@ -61,7 +73,8 @@ class LinearHybridRecommender:
     def _collab_scores(self, target_movie, top_n):
         scores = {}
         if target_movie:
-            results = collaborative_knn(self.merged_df, target_movie, top_n=top_n * 3)
+            # Use a larger neighborhood to capture more similar items
+            results = collaborative_knn(self.merged_df, target_movie, top_n=top_n * 3, k_neighbors=max(50, top_n * 5))
             if results is not None and not results.empty:
                 # Prefer normalized user rating score if available
                 if 'User_Rating_Score' in results.columns and results['User_Rating_Score'].notna().any():
@@ -76,10 +89,6 @@ class LinearHybridRecommender:
                 elif 'Similarity' in results.columns:
                     for _, row in results.iterrows():
                         scores[row['Series_Title']] = float(row['Similarity'])
-                elif 'Avg_User_Rating' in results.columns:
-                    for _, row in results.iterrows():
-                        avg = row.get('Avg_User_Rating', np.nan)
-                        scores[row['Series_Title']] = float(avg) / 10.0 if pd.notna(avg) else 0.0
                 else:
                     for _, row in results.iterrows():
                         scores[row['Series_Title']] = 0.0
@@ -141,17 +150,50 @@ class LinearHybridRecommender:
             for t, _ in sorted(popularity_scores.items(), key=lambda x: x[1], reverse=True)[:top_n * 2]:
                 candidates.add(t)
 
+        # Normalize each signal across candidates to balance scales
+        c_norm = self._minmax_normalize(content_scores, candidates)
+        cf_norm = self._minmax_normalize(collab_scores, candidates)
+        pop_norm = self._minmax_normalize(popularity_scores, candidates)
+        rec_norm = self._minmax_normalize(recency_scores, candidates)
+
         final_scores = {}
         for title in candidates:
-            c = content_scores.get(title, 0.0)
-            cf = collab_scores.get(title, 0.0)
-            pop = popularity_scores.get(title, 0.5)
-            rec = recency_scores.get(title, 0.5)
+            c = c_norm.get(title, 0.0)
+            cf = cf_norm.get(title, 0.0)
+            pop = pop_norm.get(title, 0.5)
+            rec = rec_norm.get(title, 0.5)
             score = self.alpha * c + self.beta * cf + self.gamma * pop + self.delta * rec
             final_scores[title] = float(score)
 
-        top_items = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
-        top_titles = [t for t, _ in top_items]
+        # Guarantee presence of collaborative picks using team-draft interleaving
+        cf_required = min(len(collab_scores), max(1, top_n // 2)) if collab_scores else 0
+        if cf_required > 0:
+            cf_candidates = sorted(collab_scores.items(), key=lambda x: x[1], reverse=True)
+            cf_priority = [t for t, _ in cf_candidates[:cf_required]]
+            # Order CF priority by their final hybrid scores to keep quality
+            cf_priority = sorted(cf_priority, key=lambda t: final_scores.get(t, 0.0), reverse=True)
+            global_sorted = [t for t, _ in sorted(final_scores.items(), key=lambda x: x[1], reverse=True)]
+            # Team-draft interleave: alternate CF and global best until top_n
+            merged_order = []
+            i_cf = 0
+            i_glob = 0
+            while len(merged_order) < top_n and (i_cf < len(cf_priority) or i_glob < len(global_sorted)):
+                if i_cf < len(cf_priority):
+                    t = cf_priority[i_cf]
+                    i_cf += 1
+                    if t not in merged_order:
+                        merged_order.append(t)
+                if len(merged_order) >= top_n:
+                    break
+                if i_glob < len(global_sorted):
+                    t = global_sorted[i_glob]
+                    i_glob += 1
+                    if t not in merged_order:
+                        merged_order.append(t)
+            top_titles = merged_order[:top_n]
+        else:
+            top_items = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
+            top_titles = [t for t, _ in top_items]
         result_df = self.merged_df[self.merged_df['Series_Title'].isin(top_titles)]
         if result_df.empty:
             return None
