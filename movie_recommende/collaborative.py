@@ -13,42 +13,12 @@ def load_user_ratings():
         if 'user_ratings_df' in st.session_state:
             df = st.session_state['user_ratings_df']
             if df is not None and not df.empty:
-                # Normalize dtypes
-                try:
-                    df = df.copy()
-                    if 'User_ID' in df.columns:
-                        df['User_ID'] = pd.to_numeric(df['User_ID'], errors='coerce')
-                    if 'Movie_ID' in df.columns:
-                        df['Movie_ID'] = pd.to_numeric(df['Movie_ID'], errors='coerce')
-                    if 'Rating' in df.columns:
-                        df['Rating'] = pd.to_numeric(df['Rating'], errors='coerce')
-                    df = df.dropna(subset=['User_ID','Movie_ID','Rating'])
-                    df['User_ID'] = df['User_ID'].astype(int)
-                    df['Movie_ID'] = df['Movie_ID'].astype(int)
-                    df['Rating'] = df['Rating'].astype(float)
-                except Exception:
-                    pass
                 return df
     except Exception:
         pass
     # Fallback to local CSV
     try:
-        df = pd.read_csv('user_movie_rating.csv')
-        # Normalize dtypes
-        try:
-            if 'User_ID' in df.columns:
-                df['User_ID'] = pd.to_numeric(df['User_ID'], errors='coerce')
-            if 'Movie_ID' in df.columns:
-                df['Movie_ID'] = pd.to_numeric(df['Movie_ID'], errors='coerce')
-            if 'Rating' in df.columns:
-                df['Rating'] = pd.to_numeric(df['Rating'], errors='coerce')
-            df = df.dropna(subset=['User_ID','Movie_ID','Rating'])
-            df['User_ID'] = df['User_ID'].astype(int)
-            df['Movie_ID'] = df['Movie_ID'].astype(int)
-            df['Rating'] = df['Rating'].astype(float)
-        except Exception:
-            pass
-        return df
+        return pd.read_csv('user_movie_rating.csv')
     except Exception:
         return None
 
@@ -65,8 +35,9 @@ def _build_user_item_matrix(ratings_df: pd.DataFrame, movie_ids: np.ndarray):
 
 def _fit_item_knn(user_item: pd.DataFrame):
     if user_item is None or user_item.empty:
-        return None, None
+        return None
     item_vectors = user_item.fillna(0.0).T
+    # Use Euclidean distance as requested
     model = NearestNeighbors(metric='euclidean', algorithm='brute')
     model.fit(item_vectors)
     return model, item_vectors
@@ -82,7 +53,8 @@ def _nearest_items(model, item_vectors, target_movie_id: int, k: int = 10):
         nb_movie = int(item_vectors.index[i])
         if nb_movie == target_movie_id:
             continue
-        # Convert Euclidean distance to a bounded similarity score in (0,1]
+        # Convert Euclidean distance to a closeness score in (0, 1]
+        # Higher is more similar
         neighbors[nb_movie] = 1.0 / (1.0 + float(d))
     return neighbors
 
@@ -113,24 +85,45 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
     if not neighbors:
         return None
 
-    # Rank by similarity only (pure KNN)
-    sorted_pairs = sorted(neighbors.items(), key=lambda x: x[1], reverse=True)[:top_n]
-    sorted_ids = [mid for mid, sim in sorted_pairs]
-    sim_by_id = {mid: sim for mid, sim in sorted_pairs}
-    result = merged_df[merged_df['Movie_ID'].isin(sorted_ids)][['Series_Title', 'Movie_ID']]
-    # Keep original rating/genre columns if present
+    # Compute user-based aggregate ratings for ranking
+    user_agg = None
+    if ratings_df is not None and not ratings_df.empty and {'Movie_ID', 'Rating'}.issubset(ratings_df.columns):
+        user_agg = ratings_df.groupby('Movie_ID')['Rating'].agg(['mean', 'count']).rename(columns={'mean': 'User_Avg_Rating', 'count': 'User_Rating_Count'})
+
+    # Candidate neighbor IDs
+    neighbor_ids = list(neighbors.keys())
+
+    # Build base result with metadata
+    base_cols = ['Series_Title', 'Movie_ID']
     rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else ('Rating' if 'Rating' in merged_df.columns else None)
     genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else ('Genre' if 'Genre' in merged_df.columns else None)
-    cols = ['Series_Title', 'Movie_ID'] + ([genre_col] if genre_col else []) + ([rating_col] if rating_col else [])
-    result = result.merge(merged_df[cols].drop_duplicates(['Series_Title','Movie_ID']), on=['Series_Title','Movie_ID'], how='left')
+    if genre_col:
+        base_cols.append(genre_col)
+    if rating_col:
+        base_cols.append(rating_col)
 
-    # Preserve similarity order
-    title_by_id = dict(merged_df[['Movie_ID', 'Series_Title']].values)
-    order = {title_by_id[mid]: i for i, mid in enumerate(sorted_ids) if mid in title_by_id}
+    result = merged_df[merged_df['Movie_ID'].isin(neighbor_ids)][base_cols].drop_duplicates(['Series_Title','Movie_ID'])
+
+    # Attach closeness (similarity-like) score
     result = result.copy()
-    result['rank_order'] = result['Series_Title'].map(order)
-    result['Similarity'] = result['Movie_ID'].map(sim_by_id)
-    result = result.sort_values('rank_order').drop(columns=['rank_order'])
+    result['Similarity'] = result['Movie_ID'].map(neighbors)
+
+    # Attach user rating aggregates
+    if user_agg is not None:
+        result = result.merge(user_agg, left_on='Movie_ID', right_index=True, how='left')
+        # Normalize average user rating to [0,1] if ratings are on 1..10 scale
+        result['User_Rating_Score'] = (result['User_Avg_Rating'] / 10.0).clip(lower=0.0, upper=1.0)
+    else:
+        result['User_Avg_Rating'] = np.nan
+        result['User_Rating_Count'] = 0
+        result['User_Rating_Score'] = np.nan
+
+    # Rank neighbors primarily by user average rating, then by count, then by closeness
+    result = result.sort_values(by=['User_Avg_Rating', 'User_Rating_Count', 'Similarity'], ascending=[False, False, False])
+
+    # Limit to top_n after ranking
+    result = result.head(top_n)
+
     return result.drop(columns=['Movie_ID'])
 
 
@@ -155,56 +148,3 @@ def diagnose_data_linking(merged_df: pd.DataFrame):
     except Exception:
         issues['ratings_loaded'] = False
     return issues
-
-
-@st.cache_data
-def diagnose_id_alignment(merged_df: pd.DataFrame):
-    """Comprehensive ID alignment diagnostics between IMDb (merged_df) and user ratings.
-
-    Returns a dict with counts and small samples of mismatched IDs.
-    """
-    report = {}
-    try:
-        imdb_df = merged_df.copy()
-        ratings_df = load_user_ratings()
-        report['ratings_loaded'] = ratings_df is not None and not ratings_df.empty
-        report['imdb_has_movie_id'] = 'Movie_ID' in imdb_df.columns
-        if not report['ratings_loaded'] or not report['imdb_has_movie_id']:
-            return report
-
-        # Normalize dtypes
-        imdb_ids = pd.to_numeric(imdb_df['Movie_ID'], errors='coerce')
-        ratings_ids = pd.to_numeric(ratings_df['Movie_ID'], errors='coerce')
-        imdb_ids = imdb_ids.dropna().astype(int)
-        ratings_ids = ratings_ids.dropna().astype(int)
-
-        imdb_set = set(imdb_ids.unique().tolist())
-        ratings_set = set(ratings_ids.unique().tolist())
-
-        ratings_only = sorted(list(ratings_set - imdb_set))
-        imdb_only = sorted(list(imdb_set - ratings_set))
-        overlap = ratings_set & imdb_set
-
-        report['imdb_rows'] = int(len(imdb_df))
-        report['imdb_unique_movie_ids'] = int(len(imdb_set))
-        report['ratings_rows'] = int(len(ratings_df))
-        report['ratings_unique_movie_ids'] = int(len(ratings_set))
-        report['overlap_count'] = int(len(overlap))
-        report['overlap_ratio_vs_ratings'] = float(len(overlap) / max(1, len(ratings_set)))
-        report['ratings_only_count'] = int(len(ratings_only))
-        report['imdb_only_count'] = int(len(imdb_only))
-        # Provide small samples for quick inspection
-        report['ratings_only_sample'] = ratings_only[:50]
-        report['imdb_only_sample'] = imdb_only[:50]
-
-        # Rating stats
-        if 'Rating' in ratings_df.columns:
-            r = pd.to_numeric(ratings_df['Rating'], errors='coerce')
-            r = r.dropna()
-            if not r.empty:
-                report['rating_min'] = float(r.min())
-                report['rating_max'] = float(r.max())
-                report['rating_mean'] = float(r.mean())
-    except Exception as e:
-        report['error'] = str(e)
-    return report

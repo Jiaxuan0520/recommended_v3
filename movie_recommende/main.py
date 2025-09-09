@@ -5,7 +5,7 @@ import warnings
 import requests
 import io
 from content_based import content_based_filtering_enhanced
-from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking, diagnose_id_alignment
+from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking
 from hybrid import smart_hybrid_recommendation
 
 warnings.filterwarnings('ignore')
@@ -53,49 +53,42 @@ def load_csv_from_github(file_url, file_name):
 @st.cache_data
 def load_and_prepare_data():
     """Load CSVs from GitHub and prepare data for recommendation algorithms - silent version"""
-    
+
     # GitHub raw file URLs - replace with your actual repository URLs
     github_base_url = "https://raw.githubusercontent.com/yy9449/recommender/main/movie_recommende/"
-    
-    # File URLs (movies.csv removed)
+
+    # File URLs (no movies.csv)
     imdb_url = github_base_url + "imdb_top_1000.csv"
     user_ratings_url = github_base_url + "user_movie_rating.csv"
-    
+
     # Silent loading - show minimal progress info
     with st.spinner("Loading datasets..."):
         imdb_df = load_csv_from_github(imdb_url, "imdb_top_1000.csv")
         user_ratings_df = load_csv_from_github(user_ratings_url, "user_movie_rating.csv")
-    
+
     # Check if required files loaded successfully
     if imdb_df is None:
         return None, None, "❌ Required CSV file (imdb_top_1000.csv) could not be loaded from GitHub"
-    
+
     # Store user ratings in session state for other functions to access - silent
     if user_ratings_df is not None:
         st.session_state['user_ratings_df'] = user_ratings_df
-        # Silent success - no message
     else:
-        # Only show warning if explicitly needed
         if 'user_ratings_df' in st.session_state:
             del st.session_state['user_ratings_df']
-    
+
     try:
-        # Validate required column in IMDb dataset
+        # Validate required columns
         if 'Series_Title' not in imdb_df.columns:
             return None, None, "❌ Missing Series_Title column in imdb_top_1000.csv"
 
-        # Ensure Movie_ID exists in IMDb (add if missing)
-        if 'Movie_ID' not in imdb_df.columns:
-            imdb_df['Movie_ID'] = range(len(imdb_df))
+        # Use imdb_top_1000.csv directly as the metadata source
+        merged_df = imdb_df.drop_duplicates(subset="Series_Title").copy()
 
-        # Use IMDb dataset directly as merged dataset
-        merged_df = imdb_df.drop_duplicates(subset="Series_Title")
-        
-        # Silent success - no success message
         return merged_df, user_ratings_df, None
-        
+
     except Exception as e:
-        return None, None, f"❌ Error merging datasets: {str(e)}"
+        return None, None, f"❌ Error preparing datasets: {str(e)}"
 
 # Alternative: Try local files if GitHub fails
 @st.cache_data
@@ -103,7 +96,7 @@ def load_local_fallback():
     """Fallback to load local files if GitHub loading fails - silent version"""
     try:
         import os
-        
+
         # Try different possible file paths
         imdb_df = None
         user_ratings_df = None
@@ -113,29 +106,25 @@ def load_local_fallback():
             if os.path.exists(path):
                 imdb_df = pd.read_csv(path)
                 break
-        
+
         # Check for user_movie_rating.csv
         for path in ["user_movie_rating.csv", "./user_movie_rating.csv", "data/user_movie_rating.csv", "../user_movie_rating.csv"]:
             if os.path.exists(path):
                 user_ratings_df = pd.read_csv(path)
                 break
-        
+
         if imdb_df is None:
-            return None, None, "Required CSV file (imdb_top_1000.csv) not found locally either"
-        
+            return None, None, "Required CSV file (imdb_top_1000.csv) not found locally"
+
         # Store user ratings in session state - silent
         if user_ratings_df is not None:
             st.session_state['user_ratings_df'] = user_ratings_df
-        
-        # Ensure Movie_ID exists in IMDb
-        if 'Movie_ID' not in imdb_df.columns:
-            imdb_df['Movie_ID'] = range(len(imdb_df))
-        
-        # Use IMDb dataset directly as merged dataset
-        merged_df = imdb_df.drop_duplicates(subset="Series_Title")
-        
+
+        # Use imdb_top_1000.csv directly
+        merged_df = imdb_df.drop_duplicates(subset="Series_Title").copy()
+
         return merged_df, user_ratings_df, None
-        
+
     except Exception as e:
         return None, None, str(e)
 
@@ -254,16 +243,16 @@ def main():
             
             st.info("""
             **Setup Instructions:**
-            
+
             **For GitHub Loading (Recommended):**
             1. Update the GitHub URLs in the code with your actual repository details
             2. Make sure your CSV files are in the main branch
             3. Ensure the repository is public or accessible
-            
+
             **Required Files:**
-            - `imdb_top_1000.csv`: IMDb movie data with ratings and genres
-            - `user_movie_rating.csv`: User ratings file
-            
+            - `imdb_top_1000.csv`: IMDB movie data with Movie_ID, ratings, genres
+            - `user_movie_rating.csv`: User ratings with User_ID, Movie_ID, Rating
+
             **GitHub URL Format:**
             ```
             https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO_NAME/main/FILENAME.csv
@@ -273,6 +262,7 @@ def main():
     
     # Show minimal success message only
     st.success("🎉 Ready to recommend!")
+    st.caption("Data sources: imdb_top_1000.csv (Series_Title, Movie_ID, Genre, IMDB_Rating, ...). Optional: user_movie_rating.csv (User_ID, Movie_ID, Rating) enables Collaborative Filtering.")
     
     # Show data summary
     with st.expander("📊 Dataset Summary", expanded=False):
@@ -285,18 +275,13 @@ def main():
             if user_ratings_df is not None:
                 st.metric("User Ratings", len(user_ratings_df))
             else:
-                st.metric("User Data", "Synthetic")
+                st.metric("User Ratings", "Not Loaded")
         
         with col3:
             if user_ratings_df is not None:
                 st.metric("Unique Users", user_ratings_df['User_ID'].nunique())
             else:
-                st.metric("Algorithm Mode", "Enhanced")
-
-    # Optional: ID alignment diagnostics
-    with st.expander("🔎 ID Alignment Diagnostics", expanded=False):
-        diag = diagnose_id_alignment(merged_df)
-        st.json(diag)
+                st.metric("Collaborative", "Disabled")
 
     # Silent check for user ratings availability
     user_ratings_available = user_ratings_df is not None
@@ -371,24 +356,10 @@ def main():
     
     # Show data source info quietly in sidebar
     if user_ratings_available:
-        st.sidebar.success("💾 Real user data available")
+        st.sidebar.success("💾 user_movie_rating.csv loaded")
     else:
-        st.sidebar.info("🤖 Using synthetic profiles")
+        st.sidebar.warning("📁 user_movie_rating.csv not found — Collaborative Filtering disabled")
     
-    # Compute Movie_ID overlap coverage for collaborative safety
-    overlap_ratio = None
-    try:
-        if user_ratings_df is not None and 'Movie_ID' in merged_df.columns:
-            ratings_df_tmp = user_ratings_df.copy()
-            ratings_df_tmp['Movie_ID'] = pd.to_numeric(ratings_df_tmp['Movie_ID'], errors='coerce')
-            ratings_df_tmp = ratings_df_tmp.dropna(subset=['Movie_ID'])
-            ratings_ids = set(ratings_df_tmp['Movie_ID'].astype(int).unique().tolist())
-            imdb_ids = set(merged_df['Movie_ID'].astype(int).unique().tolist())
-            intersect = ratings_ids & imdb_ids
-            overlap_ratio = (len(intersect) / max(1, len(ratings_ids))) if ratings_ids else 0.0
-    except Exception:
-        overlap_ratio = None
-
     # Generate button
     if st.sidebar.button("🚀 Generate Recommendations", type="primary"):
         if not movie_title and not genre_input:
@@ -401,14 +372,14 @@ def main():
             if algorithm == "Content-Based":
                 results = content_based_filtering_enhanced(merged_df, movie_title, genre_input, top_n)
             elif algorithm == "Collaborative Filtering":
-                if not movie_title:
+                if not user_ratings_available:
+                    st.error("❌ Collaborative filtering requires user_movie_rating.csv (User_ID, Movie_ID, Rating).")
+                    return
+                if movie_title:
+                    results = collaborative_filtering_enhanced(merged_df, movie_title, top_n)
+                else:
                     st.warning("⚠️ Collaborative filtering requires a movie title input.")
                     return
-                if overlap_ratio is not None and overlap_ratio == 0.0:
-                    st.error("❌ No overlap between ratings and IMDb Movie_IDs. Cannot run collaborative filtering.")
-                    st.info("Tip: Ensure user_movie_rating.csv uses the same Movie_ID values as imdb_top_1000.csv.")
-                    return
-                results = collaborative_filtering_enhanced(merged_df, movie_title, top_n)
             else:  # Hybrid
                 results = smart_hybrid_recommendation(merged_df, movie_title, genre_input, top_n)
             
