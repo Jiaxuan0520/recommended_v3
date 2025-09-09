@@ -24,13 +24,17 @@ def load_user_ratings():
         return None
 
 
-def _build_user_item_matrix(ratings_df: pd.DataFrame, movie_ids: np.ndarray):
+def _build_user_item_matrix(ratings_df: pd.DataFrame, series_ids: np.ndarray):
     if ratings_df is None or ratings_df.empty:
         return None
-    ratings = ratings_df[ratings_df['Movie_ID'].isin(movie_ids)].copy()
+    # Align ratings with available Series_IDs
+    id_col = 'Series_ID' if 'Series_ID' in ratings_df.columns else ('Movie_ID' if 'Movie_ID' in ratings_df.columns else None)
+    if id_col is None:
+        return None
+    ratings = ratings_df[ratings_df[id_col].isin(series_ids)].copy()
     if ratings.empty:
         return None
-    user_item = ratings.pivot_table(index='User_ID', columns='Movie_ID', values='Rating')
+    user_item = ratings.pivot_table(index='User_ID', columns=id_col, values='Rating')
     return user_item
 
 
@@ -38,22 +42,24 @@ def _fit_item_knn(user_item: pd.DataFrame):
     if user_item is None or user_item.empty:
         return None
     item_vectors = user_item.fillna(0.0).T
-    model = NearestNeighbors(metric='cosine', algorithm='brute')
+    # Use Euclidean distance for KNN
+    model = NearestNeighbors(metric='euclidean', algorithm='brute')
     model.fit(item_vectors)
     return model, item_vectors
 
 
-def _nearest_items(model, item_vectors, target_movie_id: int, k: int = 10):
-    if model is None or item_vectors is None or target_movie_id not in item_vectors.index:
+def _nearest_items(model, item_vectors, target_series_id: int, k: int = 10):
+    if model is None or item_vectors is None or target_series_id not in item_vectors.index:
         return {}
-    idx = item_vectors.index.get_loc(target_movie_id)
+    idx = item_vectors.index.get_loc(target_series_id)
     distances, indices = model.kneighbors(item_vectors.iloc[[idx]], n_neighbors=min(k + 1, len(item_vectors)))
     neighbors = {}
     for d, i in zip(distances[0], indices[0]):
-        nb_movie = int(item_vectors.index[i])
-        if nb_movie == target_movie_id:
+        nb_series = int(item_vectors.index[i])
+        if nb_series == target_series_id:
             continue
-        neighbors[nb_movie] = 1.0 - float(d)
+        # Convert Euclidean distance to similarity in (0,1]
+        neighbors[nb_series] = 1.0 / (1.0 + float(d))
     return neighbors
 
 
@@ -62,46 +68,60 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
     if target_movie is None or not isinstance(target_movie, str) or target_movie.strip() == '':
         return None
 
-    if 'Movie_ID' not in merged_df.columns or 'Series_Title' not in merged_df.columns:
+    if 'Series_Title' not in merged_df.columns:
         return None
 
-    # Map titles to Movie_ID
-    title_to_id = dict(merged_df[['Series_Title', 'Movie_ID']].values)
+    # Determine available ID column in merged_df
+    id_col = None
+    if 'Series_ID' in merged_df.columns:
+        id_col = 'Series_ID'
+    elif 'Movie_ID' in merged_df.columns:
+        id_col = 'Movie_ID'
+    else:
+        return None
+
+    # Map titles to ID
+    title_to_id = dict(merged_df[['Series_Title', id_col]].values)
     if target_movie not in title_to_id:
         # try case-insensitive
         match_series = merged_df[merged_df['Series_Title'].str.lower() == target_movie.lower()]
         if match_series.empty:
             return None
-        target_movie_id = int(match_series.iloc[0]['Movie_ID'])
+        target_series_id = int(match_series.iloc[0][id_col])
     else:
-        target_movie_id = int(title_to_id[target_movie])
+        target_series_id = int(title_to_id[target_movie])
 
     ratings_df = load_user_ratings()
-    user_item = _build_user_item_matrix(ratings_df, merged_df['Movie_ID'].values)
+    series_ids = merged_df[id_col].values
+    user_item = _build_user_item_matrix(ratings_df, series_ids)
     model, item_vectors = _fit_item_knn(user_item)
-    neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
+    neighbors = _nearest_items(model, item_vectors, target_series_id, k=k_neighbors)
     if not neighbors:
         return None
 
     # Rank by similarity only (pure KNN)
     sorted_pairs = sorted(neighbors.items(), key=lambda x: x[1], reverse=True)[:top_n]
-    sorted_ids = [mid for mid, sim in sorted_pairs]
-    sim_by_id = {mid: sim for mid, sim in sorted_pairs}
-    result = merged_df[merged_df['Movie_ID'].isin(sorted_ids)][['Series_Title', 'Movie_ID']]
+    sorted_ids = [sid for sid, sim in sorted_pairs]
+    sim_by_id = {sid: sim for sid, sim in sorted_pairs}
+    result = merged_df[merged_df[id_col].isin(sorted_ids)][['Series_Title', id_col]]
     # Keep original rating/genre columns if present
     rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else ('Rating' if 'Rating' in merged_df.columns else None)
     genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else ('Genre' if 'Genre' in merged_df.columns else None)
-    cols = ['Series_Title', 'Movie_ID'] + ([genre_col] if genre_col else []) + ([rating_col] if rating_col else [])
-    result = result.merge(merged_df[cols].drop_duplicates(['Series_Title','Movie_ID']), on=['Series_Title','Movie_ID'], how='left')
+    cols = ['Series_Title', id_col] + ([genre_col] if genre_col else []) + ([rating_col] if rating_col else [])
+    result = result.merge(merged_df[cols].drop_duplicates(['Series_Title', id_col]), on=['Series_Title', id_col], how='left')
 
     # Preserve similarity order
-    title_by_id = dict(merged_df[['Movie_ID', 'Series_Title']].values)
-    order = {title_by_id[mid]: i for i, mid in enumerate(sorted_ids) if mid in title_by_id}
+    title_by_id = dict(merged_df[[id_col, 'Series_Title']].values)
+    order = {title_by_id[sid]: i for i, sid in enumerate(sorted_ids) if sid in title_by_id}
     result = result.copy()
     result['rank_order'] = result['Series_Title'].map(order)
-    result['Similarity'] = result['Movie_ID'].map(sim_by_id)
+    result['Similarity'] = result[id_col].map(sim_by_id)
     result = result.sort_values('rank_order').drop(columns=['rank_order'])
-    return result.drop(columns=['Movie_ID'])
+
+    # Keep the ID column in output as Series_ID (rename if needed)
+    if id_col == 'Movie_ID':
+        result = result.rename(columns={'Movie_ID': 'Series_ID'})
+    return result
 
 
 @st.cache_data
@@ -113,15 +133,19 @@ def collaborative_filtering_enhanced(merged_df: pd.DataFrame, target_movie: str,
 @st.cache_data
 def diagnose_data_linking(merged_df: pd.DataFrame):
     issues = {}
+    issues['has_series_id'] = 'Series_ID' in merged_df.columns
     issues['has_movie_id'] = 'Movie_ID' in merged_df.columns
     issues['unique_titles'] = merged_df['Series_Title'].nunique()
     issues['rows'] = len(merged_df)
     try:
         ratings = load_user_ratings()
         issues['ratings_loaded'] = ratings is not None and not ratings.empty
-        if issues['ratings_loaded'] and issues['has_movie_id']:
-            covered = ratings['Movie_ID'].isin(merged_df['Movie_ID']).mean()
-            issues['ratings_coverage_ratio'] = float(covered)
+        if issues['ratings_loaded']:
+            id_col = 'Series_ID' if 'Series_ID' in ratings.columns else ('Movie_ID' if 'Movie_ID' in ratings.columns else None)
+            if id_col is not None and (issues['has_series_id'] or issues['has_movie_id']):
+                merged_id_col = 'Series_ID' if 'Series_ID' in merged_df.columns else 'Movie_ID'
+                covered = ratings[id_col].isin(merged_df[merged_id_col]).mean()
+                issues['ratings_coverage_ratio'] = float(covered)
     except Exception:
         issues['ratings_loaded'] = False
     return issues
