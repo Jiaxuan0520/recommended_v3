@@ -57,37 +57,6 @@ def _nearest_items(model, item_vectors, target_movie_id: int, k: int = 10):
     return neighbors
 
 
-def _nearest_items_by_pearson(user_item: pd.DataFrame, target_movie_id: int, k: int = 10):
-    """Compute item similarities using Pearson correlation over co-rated users only.
-
-    Returns dict: neighbor_movie_id -> similarity_scaled_0_to_1
-    """
-    if user_item is None or user_item.empty or target_movie_id not in user_item.columns:
-        return {}
-    target_col = user_item[target_movie_id]
-    similarities = {}
-    for col_movie_id in user_item.columns:
-        if int(col_movie_id) == int(target_movie_id):
-            continue
-        col = user_item[col_movie_id]
-        both = target_col.notna() & col.notna()
-        if both.sum() < 2:
-            continue
-        x = target_col[both].astype(float).values
-        y = col[both].astype(float).values
-        # Pearson correlation in [-1, 1]
-        corr = np.corrcoef(x, y)[0, 1]
-        if np.isnan(corr):
-            continue
-        # Scale to [0,1]
-        sim = float((corr + 1.0) / 2.0)
-        if sim > 0:
-            similarities[int(col_movie_id)] = sim
-    if not similarities:
-        return {}
-    top = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:k]
-    return dict(top)
-
 @st.cache_data
 def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8, k_neighbors: int = 20):
     """Item-based CF using user ratings for similarity; rank neighbors by average user rating.
@@ -117,17 +86,14 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
         return None
 
     user_item = _build_user_item_matrix(ratings_df, merged_df['Movie_ID'].values)
-    # Prefer Pearson over co-rated users for more intuitive similarity
-    neighbors = _nearest_items_by_pearson(user_item, target_movie_id, k=k_neighbors)
-    if not neighbors:
-        # Fallback to cosine KNN on zero-filled vectors
-        model, item_vectors = _fit_item_knn(user_item)
-        neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
+    model, item_vectors = _fit_item_knn(user_item)
+    neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
     if not neighbors:
         return None
 
-    # Optional: restrict neighbors to those sharing at least one genre with target movie
+    # Optional: restrict neighbors by genre, preferring exact genre match; also boost similarity for exact matches
     genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else ('Genre' if 'Genre' in merged_df.columns else None)
+    genre_boost = {}
     if genre_col is not None:
         target_row = merged_df[merged_df['Movie_ID'] == target_movie_id]
         if not target_row.empty:
@@ -138,14 +104,21 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
                 neighbor_ids = list(neighbors.keys())
                 genre_map = merged_df[['Movie_ID', genre_col]].drop_duplicates()
                 genre_map = genre_map[genre_map['Movie_ID'].isin(neighbor_ids)]
-                allowed = set()
+                exact_allowed = set()
+                overlap_allowed = set()
                 for _, r in genre_map.iterrows():
                     gs = parse_genres(r.get(genre_col, ''))
-                    if target_genres & gs:
-                        allowed.add(int(r['Movie_ID']))
-                filtered = {mid: sim for mid, sim in neighbors.items() if mid in allowed}
-                if filtered:
-                    neighbors = filtered
+                    mid = int(r['Movie_ID'])
+                    if gs == target_genres and len(gs) > 0:
+                        exact_allowed.add(mid)
+                        genre_boost[mid] = 1.2  # boost similarity for exact-genre matches
+                    elif target_genres & gs:
+                        overlap_allowed.add(mid)
+                        genre_boost.setdefault(mid, 1.0)
+                if exact_allowed:
+                    neighbors = {mid: sim for mid, sim in neighbors.items() if mid in exact_allowed}
+                elif overlap_allowed:
+                    neighbors = {mid: sim for mid, sim in neighbors.items() if mid in overlap_allowed}
 
     # Compute average user rating and count per movie
     agg = ratings_df.groupby('Movie_ID')['Rating'].agg(['mean', 'count']).reset_index()
@@ -154,6 +127,9 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
     # Build candidate table
     cand = pd.DataFrame({'Movie_ID': list(neighbors.keys())})
     cand['Similarity'] = cand['Movie_ID'].map(neighbors)
+    # Apply genre-based similarity boost (capped at 1.0)
+    if genre_boost:
+        cand['Similarity'] = (cand.apply(lambda r: r['Similarity'] * float(genre_boost.get(int(r['Movie_ID']), 1.0)), axis=1)).clip(upper=1.0)
     cand = cand.merge(agg, on='Movie_ID', how='left')
     # If some movies have no ratings in file (unlikely), drop or fill with global mean
     if cand['Avg_User_Rating'].isna().any():
