@@ -57,6 +57,37 @@ def _nearest_items(model, item_vectors, target_movie_id: int, k: int = 10):
     return neighbors
 
 
+def _nearest_items_by_pearson(user_item: pd.DataFrame, target_movie_id: int, k: int = 10):
+    """Compute item similarities using Pearson correlation over co-rated users only.
+
+    Returns dict: neighbor_movie_id -> similarity_scaled_0_to_1
+    """
+    if user_item is None or user_item.empty or target_movie_id not in user_item.columns:
+        return {}
+    target_col = user_item[target_movie_id]
+    similarities = {}
+    for col_movie_id in user_item.columns:
+        if int(col_movie_id) == int(target_movie_id):
+            continue
+        col = user_item[col_movie_id]
+        both = target_col.notna() & col.notna()
+        if both.sum() < 2:
+            continue
+        x = target_col[both].astype(float).values
+        y = col[both].astype(float).values
+        # Pearson correlation in [-1, 1]
+        corr = np.corrcoef(x, y)[0, 1]
+        if np.isnan(corr):
+            continue
+        # Scale to [0,1]
+        sim = float((corr + 1.0) / 2.0)
+        if sim > 0:
+            similarities[int(col_movie_id)] = sim
+    if not similarities:
+        return {}
+    top = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:k]
+    return dict(top)
+
 @st.cache_data
 def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8, k_neighbors: int = 20):
     """Item-based CF using user ratings for similarity; rank neighbors by average user rating.
@@ -86,8 +117,12 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
         return None
 
     user_item = _build_user_item_matrix(ratings_df, merged_df['Movie_ID'].values)
-    model, item_vectors = _fit_item_knn(user_item)
-    neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
+    # Prefer Pearson over co-rated users for more intuitive similarity
+    neighbors = _nearest_items_by_pearson(user_item, target_movie_id, k=k_neighbors)
+    if not neighbors:
+        # Fallback to cosine KNN on zero-filled vectors
+        model, item_vectors = _fit_item_knn(user_item)
+        neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
     if not neighbors:
         return None
 
