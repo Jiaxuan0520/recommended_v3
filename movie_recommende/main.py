@@ -370,6 +370,8 @@ def main():
             st.write(f"**🎬 {movie_title}**")
             if 'Movie_ID' in movie_info.index:
                 st.write(f"**🆔 Movie ID:** {movie_info['Movie_ID']}")
+            if 'Series_ID' in movie_info.index:
+                st.write(f"**🆔 Series ID:** {movie_info['Series_ID']}")
             if genre_col in movie_info:
                 st.write(f"**🎭 Genre:** {movie_info[genre_col]}")
             if rating_col in movie_info:
@@ -436,6 +438,17 @@ def main():
                     # Add ranking
                     display_results.insert(0, 'Rank', range(1, len(display_results) + 1))
                     
+                    # Add Series_ID if available
+                    if 'Series_ID' in merged_df.columns:
+                        series_ids = []
+                        for _, row in results.iterrows():
+                            movie_info = merged_df[merged_df['Series_Title'] == row['Series_Title']]
+                            if not movie_info.empty:
+                                series_ids.append(movie_info.iloc[0]['Series_ID'])
+                            else:
+                                series_ids.append('N/A')
+                        display_results.insert(1, 'Series ID', series_ids)
+                    
                     # Add Movie_ID if available
                     if 'Movie_ID' in merged_df.columns:
                         movie_ids = []
@@ -445,7 +458,8 @@ def main():
                                 movie_ids.append(movie_info.iloc[0]['Movie_ID'])
                             else:
                                 movie_ids.append('N/A')
-                        display_results.insert(1, 'Movie ID', movie_ids)
+                        insert_index = 2 if 'Series_ID' in merged_df.columns else 1
+                        display_results.insert(insert_index, 'Movie ID', movie_ids)
                     
                     st.dataframe(
                         display_results,
@@ -453,6 +467,7 @@ def main():
                         hide_index=True,
                         column_config={
                             "Rank": st.column_config.NumberColumn("Rank", width="small"),
+                            "Series ID": st.column_config.NumberColumn("Series ID", width="small"),
                             "Movie ID": st.column_config.NumberColumn("Movie ID", width="small"),
                             "Movie Title": st.column_config.TextColumn("Movie Title", width="large"),
                             "Genre": st.column_config.TextColumn("Genre", width="medium"),
