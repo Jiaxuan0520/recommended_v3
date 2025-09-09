@@ -35,7 +35,7 @@ def _build_user_item_matrix(ratings_df: pd.DataFrame, movie_ids: np.ndarray):
 
 def _fit_item_knn(user_item: pd.DataFrame):
     if user_item is None or user_item.empty:
-        return None
+    return None, None
     item_vectors = user_item.fillna(0.0).T
     model = NearestNeighbors(metric='euclidean', algorithm='brute')
     model.fit(item_vectors)
