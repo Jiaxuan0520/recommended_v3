@@ -34,12 +34,6 @@ def find_genre_column(df: pd.DataFrame) -> str:
     return 'Genre_y' if 'Genre_y' in df.columns else 'Genre'
 
 
-def find_director_column(df: pd.DataFrame) -> str:
-    if 'Director_y' in df.columns:
-        return 'Director_y'
-    if 'Director_x' in df.columns:
-        return 'Director_x'
-    return 'Director'
 
 
 def find_similar_titles(input_title, titles_list, cutoff=0.6):
@@ -74,24 +68,21 @@ def find_similar_titles(input_title, titles_list, cutoff=0.6):
 
 @st.cache_data
 def create_content_features(merged_df):
-    """Create TF-IDF features using only title, genre, director, and rating tokens with weights"""
+    """Create TF-IDF features using title, genre, and rating tokens with weights"""
 
     genre_col = find_genre_column(merged_df)
     rating_col = find_rating_column(merged_df)
-    director_col = find_director_column(merged_df)
 
-    # Emphasize genre strongly; drop director; keep title minimal
+    # Emphasize genre strongly; keep title minimal
     WEIGHTS = {
         'title': 1,
         'genre': 8,
-        'director': 0,
         'rating': 2,
     }
 
     def build_row_text(row: pd.Series) -> str:
         title = str(row.get('Series_Title', '')).strip()
         genre = str(row.get(genre_col, '')).strip()
-        director = str(row.get(director_col, '')).strip()
 
         # Rating bucket token (1..10) to inject numeric signal into TF-IDF
         rating_val = safe_convert_to_numeric(row.get(rating_col, np.nan), default=np.nan)
@@ -103,7 +94,6 @@ def create_content_features(merged_df):
         return ' '.join(
             [title] * WEIGHTS['title'] +
             [genre] * WEIGHTS['genre'] +
-            [director] * WEIGHTS['director'] +
             [rating_token] * WEIGHTS['rating']
         )
 
@@ -116,7 +106,11 @@ def create_content_features(merged_df):
 
 @st.cache_data
 def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, top_n=8):
-    """Content-Based filtering using title, genre, director and rating tokens (cosine similarity)"""
+    """Content-Based filtering using title, genre and rating tokens (cosine similarity)"""
+    # Get column names once at the start
+    rating_col = find_rating_column(merged_df)
+    genre_col = find_genre_column(merged_df)
+    
     if target_movie:
         similar_titles = find_similar_titles(target_movie, merged_df['Series_Title'].tolist())
         if not similar_titles:
@@ -140,13 +134,9 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
         similar_indices = [i for i in similar_indices if i != target_loc][:top_n]
         
         result_df = merged_df.iloc[similar_indices]
-        rating_col = find_rating_column(merged_df)
-        genre_col = find_genre_column(merged_df)
         return result_df[['Series_Title', genre_col, rating_col]]
     
     elif genre:
-        genre_col = find_genre_column(merged_df)
-        rating_col = find_rating_column(merged_df)
         
         # Build genre-only TF-IDF for query matching
         genre_corpus = merged_df[genre_col].fillna('').tolist()
