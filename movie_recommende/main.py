@@ -5,7 +5,7 @@ import warnings
 import requests
 import io
 from content_based import content_based_filtering_enhanced
-from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking
+from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking, diagnose_id_alignment
 from hybrid import smart_hybrid_recommendation
 
 warnings.filterwarnings('ignore')
@@ -292,6 +292,11 @@ def main():
                 st.metric("Unique Users", user_ratings_df['User_ID'].nunique())
             else:
                 st.metric("Algorithm Mode", "Enhanced")
+
+    # Optional: ID alignment diagnostics
+    with st.expander("🔎 ID Alignment Diagnostics", expanded=False):
+        diag = diagnose_id_alignment(merged_df)
+        st.json(diag)
 
     # Silent check for user ratings availability
     user_ratings_available = user_ratings_df is not None

@@ -155,3 +155,56 @@ def diagnose_data_linking(merged_df: pd.DataFrame):
     except Exception:
         issues['ratings_loaded'] = False
     return issues
+
+
+@st.cache_data
+def diagnose_id_alignment(merged_df: pd.DataFrame):
+    """Comprehensive ID alignment diagnostics between IMDb (merged_df) and user ratings.
+
+    Returns a dict with counts and small samples of mismatched IDs.
+    """
+    report = {}
+    try:
+        imdb_df = merged_df.copy()
+        ratings_df = load_user_ratings()
+        report['ratings_loaded'] = ratings_df is not None and not ratings_df.empty
+        report['imdb_has_movie_id'] = 'Movie_ID' in imdb_df.columns
+        if not report['ratings_loaded'] or not report['imdb_has_movie_id']:
+            return report
+
+        # Normalize dtypes
+        imdb_ids = pd.to_numeric(imdb_df['Movie_ID'], errors='coerce')
+        ratings_ids = pd.to_numeric(ratings_df['Movie_ID'], errors='coerce')
+        imdb_ids = imdb_ids.dropna().astype(int)
+        ratings_ids = ratings_ids.dropna().astype(int)
+
+        imdb_set = set(imdb_ids.unique().tolist())
+        ratings_set = set(ratings_ids.unique().tolist())
+
+        ratings_only = sorted(list(ratings_set - imdb_set))
+        imdb_only = sorted(list(imdb_set - ratings_set))
+        overlap = ratings_set & imdb_set
+
+        report['imdb_rows'] = int(len(imdb_df))
+        report['imdb_unique_movie_ids'] = int(len(imdb_set))
+        report['ratings_rows'] = int(len(ratings_df))
+        report['ratings_unique_movie_ids'] = int(len(ratings_set))
+        report['overlap_count'] = int(len(overlap))
+        report['overlap_ratio_vs_ratings'] = float(len(overlap) / max(1, len(ratings_set)))
+        report['ratings_only_count'] = int(len(ratings_only))
+        report['imdb_only_count'] = int(len(imdb_only))
+        # Provide small samples for quick inspection
+        report['ratings_only_sample'] = ratings_only[:50]
+        report['imdb_only_sample'] = imdb_only[:50]
+
+        # Rating stats
+        if 'Rating' in ratings_df.columns:
+            r = pd.to_numeric(ratings_df['Rating'], errors='coerce')
+            r = r.dropna()
+            if not r.empty:
+                report['rating_min'] = float(r.min())
+                report['rating_max'] = float(r.max())
+                report['rating_mean'] = float(r.mean())
+    except Exception as e:
+        report['error'] = str(e)
+    return report
