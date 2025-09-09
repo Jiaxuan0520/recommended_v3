@@ -60,7 +60,10 @@ class LinearHybridRecommender:
 
     def _collab_scores(self, target_movie, top_n):
         scores = {}
-        if target_movie and self.user_ratings_df is not None:
+        if self.user_ratings_df is None:
+            return scores
+        # If movie provided, use standard collaborative
+        if target_movie:
             results = collaborative_knn(self.merged_df, target_movie, top_n=top_n * 3)
             if results is not None and not results.empty:
                 # Prefer normalized user rating score if available
@@ -79,6 +82,20 @@ class LinearHybridRecommender:
                 else:
                     for _, row in results.iterrows():
                         scores[row['Series_Title']] = 0.0
+        # If no movie, attempt a genre-based collaborative surrogate using top rated by users in genre
+        else:
+            try:
+                # Aggregate user ratings by Movie_ID
+                agg = self.user_ratings_df.groupby('Movie_ID')['Rating'].agg(['mean', 'count']).reset_index()
+                agg = agg.rename(columns={'mean': 'Avg_User_Rating', 'count': 'Num_Ratings'})
+                # Join with merged_df to get titles
+                joined = agg.merge(self.merged_df[['Movie_ID', 'Series_Title']], on='Movie_ID', how='left')
+                # Rank and take top_n*3
+                joined = joined.sort_values(['Avg_User_Rating', 'Num_Ratings'], ascending=[False, False]).head(top_n * 3)
+                for _, row in joined.iterrows():
+                    scores[row['Series_Title']] = float(row['Avg_User_Rating']) / 10.0
+            except Exception:
+                pass
         return scores
 
     def _popularity_scores(self):

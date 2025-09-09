@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics.pairwise import cosine_similarity
 import streamlit as st
+from content_based import create_content_features
 
 # Minimal, pure item-based KNN collaborative filtering without extra calculations
 
@@ -57,49 +58,38 @@ def _nearest_items(model, item_vectors, target_movie_id: int, k: int = 10):
     return neighbors
 
 
-def _nearest_items_adjusted_pearson(user_item: pd.DataFrame, target_movie_id: int, k: int = 20, min_common: int = 3, shrinkage: float = 10.0):
-    """Compute item neighbors using adjusted Pearson correlation on co-rated users with shrinkage.
+def _find_surrogate_target_id(merged_df: pd.DataFrame, target_movie_id: int, item_vectors) -> int:
+    """Use content similarity to find the closest movie that has user ratings.
 
-    - Center ratings by each user's mean to remove user bias
-    - Compute Pearson correlation only on users who rated both items
-    - Apply shrinkage toward 0 by co-rating count: sim' = (n/(n+shrink)) * corr
-    - Clamp negatives to 0.0 for similarity display
+    This bridges the gap when the selected target movie has no ratings in the
+    user-item matrix by picking the most similar movie (by content) that does.
     """
-    if user_item is None or user_item.empty or target_movie_id not in user_item.columns:
-        return {}
+    try:
+        if item_vectors is None or 'Movie_ID' not in merged_df.columns:
+            return None
+        # Locate target row in merged_df
+        target_rows = merged_df[merged_df['Movie_ID'] == target_movie_id]
+        if target_rows.empty:
+            return None
+        target_idx = target_rows.index[0]
 
-    # Center by user mean (adjusted cosine/pearson style)
-    centered = user_item.sub(user_item.mean(axis=1), axis=0)
-    target_series = centered[target_movie_id].dropna()
-    if target_series.empty:
-        return {}
+        # Build content features once
+        content_features = create_content_features(merged_df)
+        target_loc = merged_df.index.get_loc(target_idx)
+        target_vec = content_features[target_loc].reshape(1, -1)
+        sims = cosine_similarity(target_vec, content_features).flatten()
+        order = list(np.argsort(-sims))
 
-    sims = {}
-    for col in centered.columns:
-        if int(col) == int(target_movie_id):
-            continue
-        s = centered[col].dropna()
-        common_idx = target_series.index.intersection(s.index)
-        n_common = len(common_idx)
-        if n_common < min_common:
-            continue
-        t_vals = target_series.loc[common_idx].values
-        s_vals = s.loc[common_idx].values
-        # Avoid zero variance
-        if np.std(t_vals) == 0.0 or np.std(s_vals) == 0.0:
-            continue
-        corr = float(np.corrcoef(t_vals, s_vals)[0, 1])
-        shrunk = (n_common / (n_common + shrinkage)) * corr
-        if np.isnan(shrunk):
-            continue
-        sims[int(col)] = float(max(0.0, min(1.0, shrunk)))
-
-    if not sims:
-        return {}
-
-    # Take top-k by similarity
-    top = sorted(sims.items(), key=lambda x: x[1], reverse=True)[:k]
-    return dict(top)
+        # Pick the most similar movie that exists in the ratings index
+        for i in order:
+            if i == target_loc:
+                continue
+            candidate_id = int(merged_df.iloc[i]['Movie_ID'])
+            if candidate_id in item_vectors.index:
+                return candidate_id
+    except Exception:
+        return None
+    return None
 
 
 @st.cache_data
@@ -131,13 +121,23 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
         return None
 
     user_item = _build_user_item_matrix(ratings_df, merged_df['Movie_ID'].values)
-    # Prefer adjusted Pearson neighbors; fallback to cosine KNN if needed
-    neighbors = _nearest_items_adjusted_pearson(user_item, target_movie_id, k=k_neighbors)
+    model, item_vectors = _fit_item_knn(user_item)
+    neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
+    # Bridge: if the exact target has no ratings, try a content-similar surrogate
+    if not neighbors and item_vectors is not None and target_movie_id not in item_vectors.index:
+        surrogate_id = _find_surrogate_target_id(merged_df, target_movie_id, item_vectors)
+        if surrogate_id is not None:
+            neighbors = _nearest_items(model, item_vectors, surrogate_id, k=k_neighbors)
+    # Last resort: if still nothing, fall back to globally top-rated by users
     if not neighbors:
-        model, item_vectors = _fit_item_knn(user_item)
-        neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
-    if not neighbors:
-        return None
+        agg_global = ratings_df.groupby('Movie_ID')['Rating'].agg(['mean', 'count']).reset_index()
+        agg_global = agg_global.rename(columns={'mean': 'Avg_User_Rating', 'count': 'Num_Ratings'})
+        top_global = agg_global.sort_values(['Avg_User_Rating', 'Num_Ratings'], ascending=[False, False]).head(top_n)
+        result = top_global.merge(merged_df[['Movie_ID', 'Series_Title']], on='Movie_ID', how='left')
+        result['Similarity'] = 0.0
+        # Align output columns with standard path
+        display_cols = ['Series_Title', 'Avg_User_Rating', 'Num_Ratings', 'Similarity']
+        return result[display_cols]
 
     # Compute average user rating and count per movie
     agg = ratings_df.groupby('Movie_ID')['Rating'].agg(['mean', 'count']).reset_index()
