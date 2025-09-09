@@ -150,6 +150,9 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
 
     # Final order preserved from ranking
     # Drop Movie_ID for cleaner display in app
+    # Format Avg_User_Rating to one decimal for display
+    if 'Avg_User_Rating' in result.columns:
+        result['Avg_User_Rating'] = result['Avg_User_Rating'].astype(float).round(1)
     display_cols = ['Series_Title']
     if genre_col:
         display_cols.append(genre_col)
