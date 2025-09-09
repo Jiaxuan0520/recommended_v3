@@ -16,10 +16,10 @@ class LinearHybridRecommender:
         self.genre_col = find_genre_column(merged_df)
         self.user_ratings_df = load_user_ratings()
         # Weights
-        self.alpha = 0.5  # Content
-        self.beta = 0.5   # Collaborative
-        self.gamma = 0.0  # Popularity
-        self.delta = 0.0  # Recency
+        self.alpha = 0.4  # Content
+        self.beta = 0.4   # Collaborative
+        self.gamma = 0.1  # Popularity
+        self.delta = 0.1  # Recency
 
     def _content_scores(self, target_movie, genre, top_n):
         scores = {}
@@ -60,42 +60,28 @@ class LinearHybridRecommender:
 
     def _collab_scores(self, target_movie, top_n):
         scores = {}
-        if self.user_ratings_df is None:
+        if not target_movie:
             return scores
-        # If movie provided, use standard collaborative
-        if target_movie:
-            results = collaborative_knn(self.merged_df, target_movie, top_n=top_n * 3)
-            if results is not None and not results.empty:
-                # Prefer normalized user rating score if available
-                if 'User_Rating_Score' in results.columns and results['User_Rating_Score'].notna().any():
-                    for _, row in results.iterrows():
-                        val = row.get('User_Rating_Score', np.nan)
-                        if pd.notna(val):
-                            scores[row['Series_Title']] = float(val)
-                        elif 'Similarity' in results.columns:
-                            scores[row['Series_Title']] = float(row.get('Similarity', 0.0))
-                        else:
-                            scores[row['Series_Title']] = 0.0
-                elif 'Similarity' in results.columns:
-                    for _, row in results.iterrows():
-                        scores[row['Series_Title']] = float(row['Similarity'])
+        # Do not gate on preloaded user ratings; the CF function will handle availability
+        results = collaborative_knn(self.merged_df, target_movie, top_n=top_n * 3)
+        if results is not None and not results.empty:
+            # Build a robust CF score: prefer similarity; blend with normalized avg user rating if available
+            has_similarity = 'Similarity' in results.columns
+            has_avg_rating = 'Avg_User_Rating' in results.columns
+            for _, row in results.iterrows():
+                title = row['Series_Title']
+                sim_val = float(row['Similarity']) if has_similarity and pd.notna(row.get('Similarity')) else np.nan
+                avg_val = float(row['Avg_User_Rating']) if has_avg_rating and pd.notna(row.get('Avg_User_Rating')) else np.nan
+                avg_norm = (avg_val / 10.0) if pd.notna(avg_val) else np.nan
+                if pd.notna(sim_val) and pd.notna(avg_norm):
+                    val = 0.7 * sim_val + 0.3 * avg_norm
+                elif pd.notna(sim_val):
+                    val = sim_val
+                elif pd.notna(avg_norm):
+                    val = avg_norm
                 else:
-                    for _, row in results.iterrows():
-                        scores[row['Series_Title']] = 0.0
-        # If no movie, attempt a genre-based collaborative surrogate using top rated by users in genre
-        else:
-            try:
-                # Aggregate user ratings by Movie_ID
-                agg = self.user_ratings_df.groupby('Movie_ID')['Rating'].agg(['mean', 'count']).reset_index()
-                agg = agg.rename(columns={'mean': 'Avg_User_Rating', 'count': 'Num_Ratings'})
-                # Join with merged_df to get titles
-                joined = agg.merge(self.merged_df[['Movie_ID', 'Series_Title']], on='Movie_ID', how='left')
-                # Rank and take top_n*3
-                joined = joined.sort_values(['Avg_User_Rating', 'Num_Ratings'], ascending=[False, False]).head(top_n * 3)
-                for _, row in joined.iterrows():
-                    scores[row['Series_Title']] = float(row['Avg_User_Rating']) / 10.0
-            except Exception:
-                pass
+                    val = 0.0
+                scores[title] = float(val)
         return scores
 
     def _popularity_scores(self):
@@ -144,13 +130,13 @@ class LinearHybridRecommender:
         # Gather component scores
         content_scores = self._content_scores(target_movie, genre, top_n)
         collab_scores = self._collab_scores(target_movie, top_n)
-        popularity_scores = self._popularity_scores() if self.gamma > 0.0 else {}
-        recency_scores = self._recency_scores() if self.delta > 0.0 else {}
+        popularity_scores = self._popularity_scores()
+        recency_scores = self._recency_scores()
 
         # Candidate set
         candidates = set(content_scores.keys()) | set(collab_scores.keys())
-        if len(candidates) < top_n * 2 and self.gamma > 0.0 and len(popularity_scores) > 0:
-            # Add top popular titles (only if popularity is weighted)
+        if len(candidates) < top_n * 2:
+            # Add top popular titles
             for t, _ in sorted(popularity_scores.items(), key=lambda x: x[1], reverse=True)[:top_n * 2]:
                 candidates.add(t)
 
@@ -158,8 +144,8 @@ class LinearHybridRecommender:
         for title in candidates:
             c = content_scores.get(title, 0.0)
             cf = collab_scores.get(title, 0.0)
-            pop = popularity_scores.get(title, 0.0)
-            rec = recency_scores.get(title, 0.0)
+            pop = popularity_scores.get(title, 0.5)
+            rec = recency_scores.get(title, 0.5)
             score = self.alpha * c + self.beta * cf + self.gamma * pop + self.delta * rec
             final_scores[title] = float(score)
 
