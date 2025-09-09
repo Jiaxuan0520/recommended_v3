@@ -62,14 +62,12 @@ class LinearHybridRecommender:
         scores = {}
         if not target_movie:
             return scores
-        # Do not gate on preloaded user ratings; the CF function will handle availability
+        # Let the CF function handle data availability; don't gate on preloaded ratings
         results = collaborative_knn(self.merged_df, target_movie, top_n=top_n * 3)
         if results is not None and not results.empty:
-            # Build a robust CF score: prefer similarity; blend with normalized avg user rating if available
             has_similarity = 'Similarity' in results.columns
             has_avg_rating = 'Avg_User_Rating' in results.columns
             for _, row in results.iterrows():
-                title = row['Series_Title']
                 sim_val = float(row['Similarity']) if has_similarity and pd.notna(row.get('Similarity')) else np.nan
                 avg_val = float(row['Avg_User_Rating']) if has_avg_rating and pd.notna(row.get('Avg_User_Rating')) else np.nan
                 avg_norm = (avg_val / 10.0) if pd.notna(avg_val) else np.nan
@@ -81,7 +79,7 @@ class LinearHybridRecommender:
                     val = avg_norm
                 else:
                     val = 0.0
-                scores[title] = float(val)
+                scores[row['Series_Title']] = float(val)
         return scores
 
     def _popularity_scores(self):
