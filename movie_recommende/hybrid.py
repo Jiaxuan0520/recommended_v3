@@ -17,8 +17,8 @@ class LinearHybridRecommender:
         self.user_ratings_df = load_user_ratings()
         # Weights
         self.alpha = 0.4  # Content
-        self.beta = 0.3   # Collaborative
-        self.gamma = 0.2  # Popularity
+        self.beta = 0.4   # Collaborative
+        self.gamma = 0.1  # Popularity
         self.delta = 0.1  # Recency
 
     def _content_scores(self, target_movie, genre, top_n):
@@ -63,22 +63,13 @@ class LinearHybridRecommender:
         if target_movie and self.user_ratings_df is not None:
             results = collaborative_knn(self.merged_df, target_movie, top_n=top_n * 3)
             if results is not None and not results.empty:
-                # Prefer normalized user rating score if available
-                if 'User_Rating_Score' in results.columns and results['User_Rating_Score'].notna().any():
-                    for _, row in results.iterrows():
-                        val = row.get('User_Rating_Score', np.nan)
-                        if pd.notna(val):
-                            scores[row['Series_Title']] = float(val)
-                        elif 'Similarity' in results.columns:
-                            scores[row['Series_Title']] = float(row.get('Similarity', 0.0))
-                        else:
-                            scores[row['Series_Title']] = 0.0
-                elif 'Similarity' in results.columns:
+                if 'Similarity' in results.columns:
                     for _, row in results.iterrows():
                         scores[row['Series_Title']] = float(row['Similarity'])
                 else:
+                    # Fallback: presence implies some relevance
                     for _, row in results.iterrows():
-                        scores[row['Series_Title']] = 0.0
+                        scores[row['Series_Title']] = 1.0
         return scores
 
     def _popularity_scores(self):
