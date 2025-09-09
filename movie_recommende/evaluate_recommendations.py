@@ -35,16 +35,14 @@ K_NEIGHBORS = 20  # for item-based KNN similarity neighborhood
 # =============================================================
 
 def load_datasets():
-	movies = pd.read_csv('movies.csv')
 	imdb = pd.read_csv('imdb_top_1000.csv')
 	user_ratings = pd.read_csv('user_movie_rating.csv')
 	# ensure Movie_ID exists in merged data
-	if 'Movie_ID' not in movies.columns:
-		movies['Movie_ID'] = range(len(movies))
-	merged = pd.merge(movies, imdb, on='Series_Title', how='inner')
-	# Preserve Movie_ID
-	if 'Movie_ID' not in merged.columns and 'Movie_ID' in movies.columns:
-		merged = pd.merge(movies[['Movie_ID', 'Series_Title']], merged, on='Series_Title', how='inner')
+	if 'Movie_ID' not in imdb.columns:
+		imdb = imdb.copy()
+		imdb['Movie_ID'] = range(1, len(imdb) + 1)
+	# Standardize merged dataset to IMDB metadata only
+	merged = imdb.drop_duplicates(subset='Series_Title')
 	return merged, user_ratings
 
 # =============================================================
