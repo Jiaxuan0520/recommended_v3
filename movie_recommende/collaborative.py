@@ -91,7 +91,7 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
     if not neighbors:
         return None
 
-    # Optional: apply soft genre-based boosts (no hard filtering)
+    # Optional: restrict neighbors by genre, preferring exact genre match; also boost similarity for exact matches
     genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else ('Genre' if 'Genre' in merged_df.columns else None)
     genre_boost = {}
     if genre_col is not None:
@@ -104,7 +104,7 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
                 neighbor_ids = list(neighbors.keys())
                 genre_map = merged_df[['Movie_ID', genre_col]].drop_duplicates()
                 genre_map = genre_map[genre_map['Movie_ID'].isin(neighbor_ids)]
-                exact_allowed = set()  # kept for potential diagnostics
+                exact_allowed = set()
                 overlap_allowed = set()
                 for _, r in genre_map.iterrows():
                     gs = parse_genres(r.get(genre_col, ''))
@@ -115,6 +115,10 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
                     elif target_genres & gs:
                         overlap_allowed.add(mid)
                         genre_boost.setdefault(mid, 1.0)
+                if exact_allowed:
+                    neighbors = {mid: sim for mid, sim in neighbors.items() if mid in exact_allowed}
+                elif overlap_allowed:
+                    neighbors = {mid: sim for mid, sim in neighbors.items() if mid in overlap_allowed}
 
     # Compute average user rating and count per movie
     agg = ratings_df.groupby('Movie_ID')['Rating'].agg(['mean', 'count']).reset_index()
@@ -127,24 +131,6 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
     if genre_boost:
         cand['Similarity'] = (cand.apply(lambda r: r['Similarity'] * float(genre_boost.get(int(r['Movie_ID']), 1.0)), axis=1)).clip(upper=1.0)
     cand = cand.merge(agg, on='Movie_ID', how='left')
-    # Build a normalized collaborative strength score for hybrid usage
-    try:
-        cand['Avg_User_Rating_Norm'] = (cand['Avg_User_Rating'].astype(float) / 10.0).clip(0.0, 1.0)
-    except Exception:
-        cand['Avg_User_Rating_Norm'] = 0.0
-    cand['Similarity'] = cand['Similarity'].fillna(0.0).clip(lower=0.0, upper=1.0)
-    cand['Log_Num_Ratings'] = np.log1p(cand['Num_Ratings'].fillna(0))
-    max_log = float(cand['Log_Num_Ratings'].max()) if not cand['Log_Num_Ratings'].isna().all() else 0.0
-    if max_log > 0:
-        cand['Popularity_Norm'] = cand['Log_Num_Ratings'] / max_log
-    else:
-        cand['Popularity_Norm'] = 0.0
-    # Weighted blend: favor average rating, with support from similarity and rating count
-    cand['User_Rating_Score'] = (
-        0.6 * cand['Avg_User_Rating_Norm'] +
-        0.2 * cand['Similarity'] +
-        0.2 * cand['Popularity_Norm']
-    ).clip(lower=0.0, upper=1.0)
     # If some movies have no ratings in file (unlikely), drop or fill with global mean
     if cand['Avg_User_Rating'].isna().any():
         global_mean = float(ratings_df['Rating'].mean())
@@ -172,7 +158,7 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
         display_cols.append(genre_col)
     if rating_col:
         display_cols.append(rating_col)
-    display_cols += ['Avg_User_Rating', 'Num_Ratings', 'Similarity', 'User_Rating_Score']
+    display_cols += ['Avg_User_Rating', 'Num_Ratings', 'Similarity']
     # Ensure columns exist
     result = result[display_cols]
     return result
