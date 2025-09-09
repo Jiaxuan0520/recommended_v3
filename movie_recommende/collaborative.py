@@ -57,6 +57,51 @@ def _nearest_items(model, item_vectors, target_movie_id: int, k: int = 10):
     return neighbors
 
 
+def _nearest_items_adjusted_pearson(user_item: pd.DataFrame, target_movie_id: int, k: int = 20, min_common: int = 3, shrinkage: float = 10.0):
+    """Compute item neighbors using adjusted Pearson correlation on co-rated users with shrinkage.
+
+    - Center ratings by each user's mean to remove user bias
+    - Compute Pearson correlation only on users who rated both items
+    - Apply shrinkage toward 0 by co-rating count: sim' = (n/(n+shrink)) * corr
+    - Clamp negatives to 0.0 for similarity display
+    """
+    if user_item is None or user_item.empty or target_movie_id not in user_item.columns:
+        return {}
+
+    # Center by user mean (adjusted cosine/pearson style)
+    centered = user_item.sub(user_item.mean(axis=1), axis=0)
+    target_series = centered[target_movie_id].dropna()
+    if target_series.empty:
+        return {}
+
+    sims = {}
+    for col in centered.columns:
+        if int(col) == int(target_movie_id):
+            continue
+        s = centered[col].dropna()
+        common_idx = target_series.index.intersection(s.index)
+        n_common = len(common_idx)
+        if n_common < min_common:
+            continue
+        t_vals = target_series.loc[common_idx].values
+        s_vals = s.loc[common_idx].values
+        # Avoid zero variance
+        if np.std(t_vals) == 0.0 or np.std(s_vals) == 0.0:
+            continue
+        corr = float(np.corrcoef(t_vals, s_vals)[0, 1])
+        shrunk = (n_common / (n_common + shrinkage)) * corr
+        if np.isnan(shrunk):
+            continue
+        sims[int(col)] = float(max(0.0, min(1.0, shrunk)))
+
+    if not sims:
+        return {}
+
+    # Take top-k by similarity
+    top = sorted(sims.items(), key=lambda x: x[1], reverse=True)[:k]
+    return dict(top)
+
+
 @st.cache_data
 def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8, k_neighbors: int = 20):
     """Item-based CF using user ratings for similarity; rank neighbors by average user rating.
@@ -86,8 +131,11 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
         return None
 
     user_item = _build_user_item_matrix(ratings_df, merged_df['Movie_ID'].values)
-    model, item_vectors = _fit_item_knn(user_item)
-    neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
+    # Prefer adjusted Pearson neighbors; fallback to cosine KNN if needed
+    neighbors = _nearest_items_adjusted_pearson(user_item, target_movie_id, k=k_neighbors)
+    if not neighbors:
+        model, item_vectors = _fit_item_knn(user_item)
+        neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
     if not neighbors:
         return None
 
