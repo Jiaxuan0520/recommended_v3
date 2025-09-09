@@ -13,12 +13,42 @@ def load_user_ratings():
         if 'user_ratings_df' in st.session_state:
             df = st.session_state['user_ratings_df']
             if df is not None and not df.empty:
+                # Normalize dtypes
+                try:
+                    df = df.copy()
+                    if 'User_ID' in df.columns:
+                        df['User_ID'] = pd.to_numeric(df['User_ID'], errors='coerce')
+                    if 'Movie_ID' in df.columns:
+                        df['Movie_ID'] = pd.to_numeric(df['Movie_ID'], errors='coerce')
+                    if 'Rating' in df.columns:
+                        df['Rating'] = pd.to_numeric(df['Rating'], errors='coerce')
+                    df = df.dropna(subset=['User_ID','Movie_ID','Rating'])
+                    df['User_ID'] = df['User_ID'].astype(int)
+                    df['Movie_ID'] = df['Movie_ID'].astype(int)
+                    df['Rating'] = df['Rating'].astype(float)
+                except Exception:
+                    pass
                 return df
     except Exception:
         pass
     # Fallback to local CSV
     try:
-        return pd.read_csv('user_movie_rating.csv')
+        df = pd.read_csv('user_movie_rating.csv')
+        # Normalize dtypes
+        try:
+            if 'User_ID' in df.columns:
+                df['User_ID'] = pd.to_numeric(df['User_ID'], errors='coerce')
+            if 'Movie_ID' in df.columns:
+                df['Movie_ID'] = pd.to_numeric(df['Movie_ID'], errors='coerce')
+            if 'Rating' in df.columns:
+                df['Rating'] = pd.to_numeric(df['Rating'], errors='coerce')
+            df = df.dropna(subset=['User_ID','Movie_ID','Rating'])
+            df['User_ID'] = df['User_ID'].astype(int)
+            df['Movie_ID'] = df['Movie_ID'].astype(int)
+            df['Rating'] = df['Rating'].astype(float)
+        except Exception:
+            pass
+        return df
     except Exception:
         return None
 
@@ -35,7 +65,7 @@ def _build_user_item_matrix(ratings_df: pd.DataFrame, movie_ids: np.ndarray):
 
 def _fit_item_knn(user_item: pd.DataFrame):
     if user_item is None or user_item.empty:
-    return None, None
+        return None, None
     item_vectors = user_item.fillna(0.0).T
     model = NearestNeighbors(metric='euclidean', algorithm='brute')
     model.fit(item_vectors)

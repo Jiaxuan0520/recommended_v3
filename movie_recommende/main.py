@@ -370,6 +370,20 @@ def main():
     else:
         st.sidebar.info("🤖 Using synthetic profiles")
     
+    # Compute Movie_ID overlap coverage for collaborative safety
+    overlap_ratio = None
+    try:
+        if user_ratings_df is not None and 'Movie_ID' in merged_df.columns:
+            ratings_df_tmp = user_ratings_df.copy()
+            ratings_df_tmp['Movie_ID'] = pd.to_numeric(ratings_df_tmp['Movie_ID'], errors='coerce')
+            ratings_df_tmp = ratings_df_tmp.dropna(subset=['Movie_ID'])
+            ratings_ids = set(ratings_df_tmp['Movie_ID'].astype(int).unique().tolist())
+            imdb_ids = set(merged_df['Movie_ID'].astype(int).unique().tolist())
+            intersect = ratings_ids & imdb_ids
+            overlap_ratio = (len(intersect) / max(1, len(ratings_ids))) if ratings_ids else 0.0
+    except Exception:
+        overlap_ratio = None
+
     # Generate button
     if st.sidebar.button("🚀 Generate Recommendations", type="primary"):
         if not movie_title and not genre_input:
@@ -382,11 +396,14 @@ def main():
             if algorithm == "Content-Based":
                 results = content_based_filtering_enhanced(merged_df, movie_title, genre_input, top_n)
             elif algorithm == "Collaborative Filtering":
-                if movie_title:
-                    results = collaborative_filtering_enhanced(merged_df, movie_title, top_n)
-                else:
+                if not movie_title:
                     st.warning("⚠️ Collaborative filtering requires a movie title input.")
                     return
+                if overlap_ratio is not None and overlap_ratio == 0.0:
+                    st.error("❌ No overlap between ratings and IMDb Movie_IDs. Cannot run collaborative filtering.")
+                    st.info("Tip: Ensure user_movie_rating.csv uses the same Movie_ID values as imdb_top_1000.csv.")
+                    return
+                results = collaborative_filtering_enhanced(merged_df, movie_title, top_n)
             else:  # Hybrid
                 results = smart_hybrid_recommendation(merged_df, movie_title, genre_input, top_n)
             
