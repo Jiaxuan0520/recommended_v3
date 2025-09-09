@@ -57,7 +57,7 @@ def load_and_prepare_data():
     # GitHub raw file URLs - replace with your actual repository URLs
     github_base_url = "https://raw.githubusercontent.com/yy9449/recommender/main/movie_recommende/"
     
-    # File URLs (use only IMDB top 1000 and user ratings)
+    # File URLs (movies.csv removed)
     imdb_url = github_base_url + "imdb_top_1000.csv"
     user_ratings_url = github_base_url + "user_movie_rating.csv"
     
@@ -80,22 +80,22 @@ def load_and_prepare_data():
             del st.session_state['user_ratings_df']
     
     try:
-        # Validate required columns
+        # Validate required column in IMDb dataset
         if 'Series_Title' not in imdb_df.columns:
             return None, None, "❌ Missing Series_Title column in imdb_top_1000.csv"
-        
-        # Ensure IMDB df has Movie_ID
+
+        # Ensure Movie_ID exists in IMDb (add if missing)
         if 'Movie_ID' not in imdb_df.columns:
             imdb_df['Movie_ID'] = range(len(imdb_df))
-        
-        # Use IMDB dataset directly as merged_df
+
+        # Use IMDb dataset directly as merged dataset
         merged_df = imdb_df.drop_duplicates(subset="Series_Title")
         
         # Silent success - no success message
         return merged_df, user_ratings_df, None
         
     except Exception as e:
-        return None, None, f"❌ Error preparing dataset: {str(e)}"
+        return None, None, f"❌ Error merging datasets: {str(e)}"
 
 # Alternative: Try local files if GitHub fails
 @st.cache_data
@@ -107,7 +107,7 @@ def load_local_fallback():
         # Try different possible file paths
         imdb_df = None
         user_ratings_df = None
-        
+
         # Check for imdb_top_1000.csv
         for path in ["imdb_top_1000.csv", "./imdb_top_1000.csv", "data/imdb_top_1000.csv", "../imdb_top_1000.csv"]:
             if os.path.exists(path):
@@ -127,11 +127,11 @@ def load_local_fallback():
         if user_ratings_df is not None:
             st.session_state['user_ratings_df'] = user_ratings_df
         
-        # Ensure IMDB df has Movie_ID
+        # Ensure Movie_ID exists in IMDb
         if 'Movie_ID' not in imdb_df.columns:
             imdb_df['Movie_ID'] = range(len(imdb_df))
         
-        # Use IMDB dataset directly as merged_df
+        # Use IMDb dataset directly as merged dataset
         merged_df = imdb_df.drop_duplicates(subset="Series_Title")
         
         return merged_df, user_ratings_df, None
@@ -261,8 +261,8 @@ def main():
             3. Ensure the repository is public or accessible
             
             **Required Files:**
-            - `imdb_top_1000.csv`: IMDB movie data with IDs, ratings, genres
-            - `user_movie_rating.csv`: Optional user ratings file
+            - `imdb_top_1000.csv`: IMDb movie data with ratings and genres
+            - `user_movie_rating.csv`: User ratings file
             
             **GitHub URL Format:**
             ```

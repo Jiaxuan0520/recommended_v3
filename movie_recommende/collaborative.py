@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
-from sklearn.metrics.pairwise import cosine_similarity
 import streamlit as st
 
 # Minimal, pure item-based KNN collaborative filtering without extra calculations
@@ -36,7 +35,7 @@ def _build_user_item_matrix(ratings_df: pd.DataFrame, movie_ids: np.ndarray):
 
 def _fit_item_knn(user_item: pd.DataFrame):
     if user_item is None or user_item.empty:
-        return None, None
+        return None
     item_vectors = user_item.fillna(0.0).T
     model = NearestNeighbors(metric='euclidean', algorithm='brute')
     model.fit(item_vectors)
@@ -53,7 +52,7 @@ def _nearest_items(model, item_vectors, target_movie_id: int, k: int = 10):
         nb_movie = int(item_vectors.index[i])
         if nb_movie == target_movie_id:
             continue
-        # Convert Euclidean distance to a bounded similarity score
+        # Convert Euclidean distance to a bounded similarity score in (0,1]
         neighbors[nb_movie] = 1.0 / (1.0 + float(d))
     return neighbors
 

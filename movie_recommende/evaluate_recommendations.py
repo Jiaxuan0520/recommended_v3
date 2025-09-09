@@ -35,16 +35,12 @@ K_NEIGHBORS = 20  # for item-based KNN similarity neighborhood
 # =============================================================
 
 def load_datasets():
-	movies = pd.read_csv('movies.csv')
 	imdb = pd.read_csv('imdb_top_1000.csv')
 	user_ratings = pd.read_csv('user_movie_rating.csv')
-	# ensure Movie_ID exists in merged data
-	if 'Movie_ID' not in movies.columns:
-		movies['Movie_ID'] = range(len(movies))
-	merged = pd.merge(movies, imdb, on='Series_Title', how='inner')
-	# Preserve Movie_ID
-	if 'Movie_ID' not in merged.columns and 'Movie_ID' in movies.columns:
-		merged = pd.merge(movies[['Movie_ID', 'Series_Title']], merged, on='Series_Title', how='inner')
+	# ensure Movie_ID exists in IMDb-only dataset
+	if 'Movie_ID' not in imdb.columns:
+		imdb['Movie_ID'] = range(len(imdb))
+	merged = imdb.drop_duplicates(subset='Series_Title')
 	return merged, user_ratings
 
 # =============================================================
@@ -73,8 +69,8 @@ def build_item_similarity_knn(user_ratings, merged, k=K_NEIGHBORS):
 		return None, None
 	user_item = ratings.pivot_table(index='User_ID', columns='Movie_ID', values='Rating')
 	user_item_filled = user_item.fillna(0.0)
-	# Item-based KNN on item vectors (users as features)
-	knn = NearestNeighbors(metric='cosine', algorithm='brute')
+	# Item-based KNN on item vectors (users as features) using Euclidean distance
+	knn = NearestNeighbors(metric='euclidean', algorithm='brute')
 	knn.fit(user_item_filled.T)
 	return knn, user_item
 
@@ -127,7 +123,7 @@ def predict_content_scores(merged, content_matrix):
 
 
 def predict_collaborative_scores(knn, user_item, target_movie_id, k=K_NEIGHBORS):
-	# For an item, get its k nearest neighbors by cosine distance
+	# For an item, get its k nearest neighbors by Euclidean distance
 	# Return dict: neighbor_movie_id -> similarity
 	if knn is None or user_item is None:
 		return {}
@@ -141,7 +137,8 @@ def predict_collaborative_scores(knn, user_item, target_movie_id, k=K_NEIGHBORS)
 		neighbor_movie = item_vectors.index[idx]
 		if neighbor_movie == target_movie_id:
 			continue
-		neighbors[int(neighbor_movie)] = 1.0 - float(d)  # cosine similarity
+		# Convert Euclidean distance to similarity
+		neighbors[int(neighbor_movie)] = 1.0 / (1.0 + float(d))
 	return neighbors
 
 
