@@ -16,10 +16,10 @@ class LinearHybridRecommender:
         self.genre_col = find_genre_column(merged_df)
         self.user_ratings_df = load_user_ratings()
         # Weights
-        self.alpha = 0.4  # Content
-        self.beta = 0.4   # Collaborative
-        self.gamma = 0.1  # Popularity
-        self.delta = 0.1  # Recency
+        self.alpha = 0.5  # Content
+        self.beta = 0.5   # Collaborative
+        self.gamma = 0.0  # Popularity
+        self.delta = 0.0  # Recency
 
     def _content_scores(self, target_movie, genre, top_n):
         scores = {}
@@ -63,13 +63,22 @@ class LinearHybridRecommender:
         if target_movie and self.user_ratings_df is not None:
             results = collaborative_knn(self.merged_df, target_movie, top_n=top_n * 3)
             if results is not None and not results.empty:
-                if 'Similarity' in results.columns:
+                # Prefer normalized user rating score if available
+                if 'User_Rating_Score' in results.columns and results['User_Rating_Score'].notna().any():
+                    for _, row in results.iterrows():
+                        val = row.get('User_Rating_Score', np.nan)
+                        if pd.notna(val):
+                            scores[row['Series_Title']] = float(val)
+                        elif 'Similarity' in results.columns:
+                            scores[row['Series_Title']] = float(row.get('Similarity', 0.0))
+                        else:
+                            scores[row['Series_Title']] = 0.0
+                elif 'Similarity' in results.columns:
                     for _, row in results.iterrows():
                         scores[row['Series_Title']] = float(row['Similarity'])
                 else:
-                    # Fallback: presence implies some relevance
                     for _, row in results.iterrows():
-                        scores[row['Series_Title']] = 1.0
+                        scores[row['Series_Title']] = 0.0
         return scores
 
     def _popularity_scores(self):
@@ -118,13 +127,13 @@ class LinearHybridRecommender:
         # Gather component scores
         content_scores = self._content_scores(target_movie, genre, top_n)
         collab_scores = self._collab_scores(target_movie, top_n)
-        popularity_scores = self._popularity_scores()
-        recency_scores = self._recency_scores()
+        popularity_scores = self._popularity_scores() if self.gamma > 0.0 else {}
+        recency_scores = self._recency_scores() if self.delta > 0.0 else {}
 
         # Candidate set
         candidates = set(content_scores.keys()) | set(collab_scores.keys())
-        if len(candidates) < top_n * 2:
-            # Add top popular titles
+        if len(candidates) < top_n * 2 and self.gamma > 0.0 and len(popularity_scores) > 0:
+            # Add top popular titles (only if popularity is weighted)
             for t, _ in sorted(popularity_scores.items(), key=lambda x: x[1], reverse=True)[:top_n * 2]:
                 candidates.add(t)
 
@@ -132,8 +141,8 @@ class LinearHybridRecommender:
         for title in candidates:
             c = content_scores.get(title, 0.0)
             cf = collab_scores.get(title, 0.0)
-            pop = popularity_scores.get(title, 0.5)
-            rec = recency_scores.get(title, 0.5)
+            pop = popularity_scores.get(title, 0.0)
+            rec = recency_scores.get(title, 0.0)
             score = self.alpha * c + self.beta * cf + self.gamma * pop + self.delta * rec
             final_scores[title] = float(score)
 
