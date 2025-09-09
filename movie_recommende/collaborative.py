@@ -58,6 +58,44 @@ def _nearest_items(model, item_vectors, target_series_id: int, k: int = 10):
     return neighbors
 
 
+def _fallback_popular_in_genre(merged_df: pd.DataFrame, ratings_df: pd.DataFrame, target_series_id: int, top_n: int = 8):
+    # Determine genre and rating columns
+    rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else ('Rating' if 'Rating' in merged_df.columns else None)
+    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else ('Genre' if 'Genre' in merged_df.columns else None)
+    try:
+        target_row = merged_df[merged_df['Series_ID'] == target_series_id].iloc[0]
+    except Exception:
+        target_row = None
+    pop_df = None
+    if ratings_df is not None and not ratings_df.empty and 'Series_ID' in ratings_df.columns:
+        counts = ratings_df['Series_ID'].value_counts()
+        pop_df = pd.DataFrame({'Series_ID': counts.index.astype(int), 'count': counts.values})
+        pop_df = pop_df.merge(merged_df[['Series_ID', 'Series_Title'] + ([genre_col] if genre_col else []) + ([rating_col] if rating_col else [])], on='Series_ID', how='inner')
+        # Exclude the target itself
+        pop_df = pop_df[pop_df['Series_ID'] != int(target_series_id)]
+        # If we have a target genre, prioritize same-genre titles
+        if target_row is not None and genre_col and pd.notna(target_row.get(genre_col, None)):
+            target_genre = str(target_row.get(genre_col)).split(',')[0].strip()
+            same_genre = pop_df[pop_df[genre_col].astype(str).str.contains(target_genre, case=False, na=False)]
+            if not same_genre.empty:
+                pop_df = same_genre
+        # Sort by popularity then rating if available
+        sort_cols = ['count'] + ([rating_col] if rating_col else [])
+        pop_df = pop_df.sort_values(sort_cols, ascending=[False] + ([False] if rating_col else []))
+        pop_df = pop_df[['Series_Title'] + ([genre_col] if genre_col else []) + ([rating_col] if rating_col else [])]
+    # If ratings-based popularity is unavailable, fall back to IMDB rating within same genre, else global
+    if pop_df is None or pop_df.empty:
+        base_df = merged_df.copy()
+        if target_row is not None and genre_col and pd.notna(target_row.get(genre_col, None)):
+            primary_genre = str(target_row.get(genre_col)).split(',')[0].strip()
+            base_df = base_df[base_df[genre_col].astype(str).str.contains(primary_genre, case=False, na=False)]
+        base_df = base_df[base_df['Series_ID'] != int(target_series_id)]
+        if rating_col and rating_col in base_df.columns:
+            base_df = base_df.sort_values(rating_col, ascending=False)
+        pop_df = base_df[['Series_Title'] + ([genre_col] if genre_col else []) + ([rating_col] if rating_col else [])]
+    return pop_df.head(top_n)
+
+
 @st.cache_data
 def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8, k_neighbors: int = 20):
     if target_movie is None or not isinstance(target_movie, str) or target_movie.strip() == '':
@@ -79,10 +117,14 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
 
     ratings_df = load_user_ratings()
     user_item = _build_user_item_matrix(ratings_df, merged_df['Series_ID'].values)
+    if user_item is None:
+        return _fallback_popular_in_genre(merged_df, ratings_df, target_series_id, top_n)
     model, item_vectors = _fit_item_knn(user_item)
     neighbors = _nearest_items(model, item_vectors, target_series_id, k=k_neighbors)
     if not neighbors:
-        return None
+        # Fallback: popular items (based on user interactions), favoring same genre
+        fallback = _fallback_popular_in_genre(merged_df, ratings_df, target_series_id, top_n)
+        return fallback
 
     # Rank by similarity only (pure KNN)
     sorted_pairs = sorted(neighbors.items(), key=lambda x: x[1], reverse=True)[:top_n]
