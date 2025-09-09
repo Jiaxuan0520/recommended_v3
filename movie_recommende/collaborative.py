@@ -130,9 +130,15 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
 
 
 @st.cache_data
+def collaborative_rank_by_avg_user_rating(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8, k_neighbors: int = 20):
+    """Safer alias for the collaborative algorithm to avoid any legacy cache path issues."""
+    return collaborative_knn(merged_df, target_movie, top_n=top_n, k_neighbors=k_neighbors)
+
+
+@st.cache_data
 def collaborative_filtering_enhanced(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8):
-    # Minimal wrapper to keep existing app API; uses pure KNN ranking
-    return collaborative_knn(merged_df, target_movie, top_n=top_n)
+    # Minimal wrapper to keep existing app API; uses KNN for similarity then rank by avg user rating
+    return collaborative_rank_by_avg_user_rating(merged_df, target_movie, top_n=top_n)
 
 
 @st.cache_data
