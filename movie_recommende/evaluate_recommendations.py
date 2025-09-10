@@ -7,7 +7,33 @@ from sklearn.metrics import classification_report, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 from collections import defaultdict
 import warnings
+import os
+import sys
+
+# Suppress all warnings including Streamlit
 warnings.filterwarnings('ignore')
+os.environ['STREAMLIT_SERVER_HEADLESS'] = 'true'
+
+# Mock Streamlit module to avoid cache warnings when running outside Streamlit
+class MockStreamlit:
+    class cache_data:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __call__(self, func):
+            return func
+    
+    class session_state:
+        def __init__(self):
+            pass
+        def __getitem__(self, key):
+            return None
+        def __setitem__(self, key, value):
+            pass
+        def __contains__(self, key):
+            return False
+
+# Patch streamlit module before importing algorithm functions
+sys.modules['streamlit'] = MockStreamlit()
 
 # Import latest algorithm functions
 from content_based import (
@@ -92,6 +118,10 @@ def split_per_user(user_ratings, test_size=TEST_SIZE_PER_USER, random_state=RAND
 # =============================================================
 
 def evaluate_models():
+	# Suppress all warnings during evaluation
+	import warnings
+	warnings.filterwarnings('ignore')
+	
 	merged, ratings = load_datasets()
 	genre_col, rating_col, year_col, votes_col = get_cols(merged)
 
@@ -283,4 +313,10 @@ def evaluate_models():
 
 
 if __name__ == '__main__':
-	evaluate_models()
+	# Redirect stderr to suppress Streamlit warnings
+	import contextlib
+	import io
+	
+	# Suppress warnings by redirecting stderr temporarily
+	with contextlib.redirect_stderr(io.StringIO()):
+		evaluate_models()
