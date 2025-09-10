@@ -4,7 +4,7 @@ import numpy as np
 import warnings
 import requests
 import io
-from content_based import content_based_filtering_enhanced
+from content_based import content_based_filtering_enhanced, content_based_with_signals
 from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking, collaborative_knn
 from hybrid import smart_hybrid_recommendation
 
@@ -346,7 +346,7 @@ def main():
     # Algorithm selection
     algorithm = st.sidebar.selectbox(
         "🔬 Choose Algorithm:",
-        ["Hybrid", "Content-Based", "Collaborative Filtering"]
+        ["Hybrid", "Content-Based Enhanced", "Content-Based Basic", "Collaborative Filtering"]
     )
     
     # Number of recommendations
@@ -378,7 +378,9 @@ def main():
             debug_info = None
             score_breakdown = None
             
-            if algorithm == "Content-Based":
+            if algorithm == "Content-Based Enhanced":
+                results = content_based_with_signals(merged_df, movie_title, genre_input, top_n)
+            elif algorithm == "Content-Based Basic":
                 results = content_based_filtering_enhanced(merged_df, movie_title, genre_input, top_n)
             elif algorithm == "Collaborative Filtering":
                 if movie_title:
