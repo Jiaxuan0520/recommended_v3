@@ -7,20 +7,16 @@ from sklearn.metrics import classification_report, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 from collections import defaultdict
 import warnings
-import os
-import sys
-
-# Mock Streamlit module to avoid cache warnings when running outside Streamlit
 warnings.filterwarnings('ignore')
 
-# Import latest algorithm functions
+# Import latest algorithm functions to ensure feature parity
 from content_based import (
 	create_content_features,
 	find_rating_column,
 	find_genre_column,
 	content_based_filtering_enhanced
 )
-from collaborative import collaborative_knn, load_user_ratings
+from collaborative import collaborative_knn
 from hybrid import simple_hybrid_recommendation
 
 # =============================================================
@@ -28,8 +24,8 @@ from hybrid import simple_hybrid_recommendation
 # =============================================================
 # Updated weights to match latest hybrid algorithm
 ALPHA = 0.4  # Content-based weight
-BETA = 0.4   # Collaborative weight (updated from 0.3)
-GAMMA = 0.1  # Popularity weight (updated from 0.2)
+BETA = 0.4   # Collaborative weight (updated to match latest)
+GAMMA = 0.1  # Popularity weight (updated to match latest)
 DELTA = 0.1  # Recency weight
 
 RATING_THRESHOLD = 4.0  # ratings >= threshold are positive
@@ -64,9 +60,7 @@ def get_cols(df):
 	return genre_col, rating_col, year_col, votes_col
 
 
-# =============================================================
-# Helper Functions (simplified for new evaluation approach)
-# =============================================================
+# Removed old helper functions - now using actual algorithm implementations
 
 
 # =============================================================
@@ -92,10 +86,11 @@ def split_per_user(user_ratings, test_size=TEST_SIZE_PER_USER, random_state=RAND
 	return train_df, test_df
 
 # =============================================================
-# Evaluation Pipeline - Updated to use actual algorithms
+# Evaluation Pipeline
 # =============================================================
 
 def evaluate_models():
+	"""Updated evaluation using actual algorithm functions from latest implementations"""
 	merged, ratings = load_datasets()
 	genre_col, rating_col, year_col, votes_col = get_cols(merged)
 
@@ -127,7 +122,7 @@ def evaluate_models():
 	# Iterate over test set rows
 	for idx, row in test_df.iterrows():
 		if idx % 100 == 0:
-			print(f"Processing test item {idx}/{len(test_df)}")
+			print(f"Processing {idx}/{len(test_df)} test cases...")
 			
 		user = row['User_ID']
 		movie_id = int(row['Movie_ID'])
@@ -145,9 +140,10 @@ def evaluate_models():
 				# Get similarity score from content-based algorithm
 				content_features = create_content_features(merged)
 				target_idx = merged[merged['Series_Title'] == title].index[0]
-				target_vec = content_features[target_idx].reshape(1, -1)
+				target_loc = merged.index.get_loc(target_idx)
+				target_vec = content_features[target_loc].reshape(1, -1)
 				sims = cosine_similarity(target_vec, content_features).flatten()
-				content_score = float(np.max(sims[sims < 1.0])) if len(sims[sims < 1.0]) > 0 else 0.0
+				content_score = float(np.max(sims[sims < 1.0])) if len(sims[sims < 1.0]) > 0 else 0.5
 				content_rating_est = 2.0 + 8.0 * float(np.clip(content_score, 0.0, 1.0))
 			else:
 				content_rating_est = 5.0  # Default neutral rating
@@ -156,17 +152,17 @@ def evaluate_models():
 
 		# 2. Collaborative Prediction using actual algorithm
 		try:
-			collab_result = collaborative_knn(merged, target_movie=title, top_n=1, k_neighbors=K_NEIGHBORS)
-			if collab_result is not None and not collab_result.empty and 'Avg_User_Rating' in collab_result.columns:
-				collab_score = float(collab_result.iloc[0]['Avg_User_Rating'])
+			collab_result = collaborative_knn(merged, target_movie=title, top_n=1)
+			if collab_result is not None and not collab_result.empty:
+				# Get average user rating from collaborative algorithm
+				if 'Avg_User_Rating' in collab_result.columns:
+					collab_score = float(collab_result.iloc[0]['Avg_User_Rating'])
+				else:
+					collab_score = 5.0
 			else:
-				# Fallback to item mean from training data
-				item_ratings = train_df[train_df['Movie_ID'] == movie_id]['Rating']
-				collab_score = item_ratings.mean() if not item_ratings.empty else train_df['Rating'].mean()
+				collab_score = 5.0
 		except Exception as e:
-			# Fallback to item mean
-			item_ratings = train_df[train_df['Movie_ID'] == movie_id]['Rating']
-			collab_score = item_ratings.mean() if not item_ratings.empty else train_df['Rating'].mean()
+			collab_score = 5.0
 
 		# 3. Hybrid Prediction using actual algorithm
 		try:
@@ -177,16 +173,19 @@ def evaluate_models():
 				# Extract final score from hybrid algorithm
 				# Since hybrid doesn't return scores directly, we'll compute it
 				# using the same weights as the hybrid algorithm
-				hybrid_pred = (
-					ALPHA * content_rating_est +
-					BETA * collab_score +
-					GAMMA * 5.0 +  # Default popularity
-					DELTA * 5.0    # Default recency
-				)
+				content_score = 2.0 + 8.0 * float(np.clip(content_score, 0.0, 1.0))
+				collab_score = float(np.clip(collab_score, 1.0, 10.0))
+				
+				# Get popularity and recency scores (simplified)
+				pop_score = 5.0  # Default
+				rec_score = 5.0  # Default
+				
+				hybrid_pred = (ALPHA * content_score + BETA * collab_score + 
+							  GAMMA * pop_score + DELTA * rec_score)
 			else:
-				hybrid_pred = (content_rating_est + collab_score) / 2.0
+				hybrid_pred = 5.0
 		except Exception as e:
-			hybrid_pred = (content_rating_est + collab_score) / 2.0
+			hybrid_pred = 5.0
 
 		# Clip to rating bounds
 		content_rating_est = float(np.clip(content_rating_est, 1.0, 10.0))
@@ -235,7 +234,7 @@ def evaluate_models():
 
 	# Display results
 	print('\n' + '='*60)
-	print('EVALUATION RESULTS - Using Actual Algorithm Implementations')
+	print('EVALUATION RESULTS (Using Actual Algorithm Functions)')
 	print('='*60)
 	
 	print('\nModel: Content-Based')
@@ -263,24 +262,23 @@ def evaluate_models():
 	summary_rows = []
 	for name in ['Content-Based', 'Collaborative', 'Hybrid']:
 		row = {
-			'Method': name,
-			'Accuracy': round(results[name]['accuracy'], 3),
+			'Method Used': name,
 			'Precision': round(results[name]['precision'], 3),
 			'Recall': round(results[name]['recall'], 3),
 			'F1-Score': round(results[name]['f1'], 3),
 			'RMSE': round(results[name]['rmse'], 3),
 			'Notes': (
-				'Uses TF-IDF with enhanced features' if name == 'Content-Based' else
-				'Uses item-based KNN with user ratings' if name == 'Collaborative' else
-				'Combines all approaches with weights (0.4, 0.4, 0.1, 0.1)'
+				'Uses TF-IDF + cosine similarity' if name == 'Content-Based' else
+				'Uses item-based KNN + user ratings' if name == 'Collaborative' else
+				'Combines all methods with weights (0.4, 0.4, 0.1, 0.1)'
 			)
 		}
 		summary_rows.append(row)
 	
-	summary_df = pd.DataFrame(summary_rows)
-	print('\n' + '='*80)
-	print('SUMMARY COMPARISON TABLE')
-	print('='*80)
+	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'F1-Score', 'RMSE', 'Notes'])
+	print('\n' + '='*60)
+	print('COMPARISON TABLE')
+	print('='*60)
 	print(summary_df.to_string(index=False))
 	
 	return results
