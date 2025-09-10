@@ -116,9 +116,21 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
                         overlap_allowed.add(mid)
                         genre_boost.setdefault(mid, 1.0)
                 if exact_allowed:
-                    neighbors = {mid: sim for mid, sim in neighbors.items() if mid in exact_allowed}
+                    # Only filter by exact genre if we have enough candidates
+                    if len(exact_allowed) >= top_n:
+                        neighbors = {mid: sim for mid, sim in neighbors.items() if mid in exact_allowed}
+                    else:
+                        # If not enough exact matches, include overlap matches too
+                        if overlap_allowed:
+                            combined_allowed = exact_allowed | overlap_allowed
+                            if len(combined_allowed) >= top_n:
+                                neighbors = {mid: sim for mid, sim in neighbors.items() if mid in combined_allowed}
+                        # If still not enough, keep all neighbors (no genre filtering)
                 elif overlap_allowed:
-                    neighbors = {mid: sim for mid, sim in neighbors.items() if mid in overlap_allowed}
+                    # Only filter by overlap if we have enough candidates
+                    if len(overlap_allowed) >= top_n:
+                        neighbors = {mid: sim for mid, sim in neighbors.items() if mid in overlap_allowed}
+                    # If not enough overlap matches, keep all neighbors (no genre filtering)
 
     # Compute average user rating and count per movie
     agg = ratings_df.groupby('Movie_ID')['Rating'].agg(['mean', 'count']).reset_index()
@@ -127,6 +139,15 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
     # Build candidate table
     cand = pd.DataFrame({'Movie_ID': list(neighbors.keys())})
     cand['Similarity'] = cand['Movie_ID'].map(neighbors)
+    
+    # Safety check: ensure we have enough candidates for top_n
+    if len(cand) < top_n:
+        # If genre filtering reduced candidates too much, fall back to original neighbors
+        # This should rarely happen due to the logic above, but provides a safety net
+        original_neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
+        if len(original_neighbors) > len(neighbors):
+            cand = pd.DataFrame({'Movie_ID': list(original_neighbors.keys())})
+            cand['Similarity'] = cand['Movie_ID'].map(original_neighbors)
     # Apply genre-based similarity boost (capped at 1.0)
     if genre_boost:
         cand['Similarity'] = (cand.apply(lambda r: r['Similarity'] * float(genre_boost.get(int(r['Movie_ID']), 1.0)), axis=1)).clip(upper=1.0)
