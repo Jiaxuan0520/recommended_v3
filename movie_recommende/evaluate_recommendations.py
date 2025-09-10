@@ -7,7 +7,20 @@ from sklearn.metrics import classification_report, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 from collections import defaultdict
 import warnings
+import logging
+import os
+import sys
+from io import StringIO
+
+# Suppress all warnings and Streamlit messages
 warnings.filterwarnings('ignore')
+logging.getLogger('streamlit').setLevel(logging.ERROR)
+os.environ['STREAMLIT_BROWSER_GATHER_USAGE_STATS'] = 'false'
+os.environ['STREAMLIT_SERVER_HEADLESS'] = 'true'
+
+# Suppress Streamlit warnings during import
+old_stderr = sys.stderr
+sys.stderr = StringIO()
 
 # Import latest algorithm functions
 from content_based import (
@@ -18,6 +31,9 @@ from content_based import (
 )
 from collaborative import collaborative_knn, load_user_ratings
 from hybrid import simple_hybrid_recommendation
+
+# Restore stderr
+sys.stderr = old_stderr
 
 # =============================================================
 # Configuration
@@ -91,173 +107,186 @@ def split_per_user(user_ratings, test_size=TEST_SIZE_PER_USER, random_state=RAND
 
 def evaluate_models():
 	"""Evaluate models using actual algorithm functions from latest code"""
-	merged, ratings = load_datasets()
-	genre_col, rating_col, year_col, votes_col = get_cols(merged)
-
-	# Filter ratings to those movies present in merged
-	present_ids = set(merged['Movie_ID'].unique())
-	ratings = ratings[ratings['Movie_ID'].isin(present_ids)].copy()
-
-	# Split BEFORE building models to avoid leakage
-	train_df, test_df = split_per_user(ratings)
-
-	# Build quick lookups
-	movieid_to_title = dict(merged[['Movie_ID', 'Series_Title']].values)
-	title_to_movieid = {v: k for k, v in movieid_to_title.items()}
-
-	# Predictions and ground truth
-	y_true_cls = []
-	y_pred_cls_content = []
-	y_pred_cls_collab = []
-	y_pred_cls_hybrid = []
-
-	y_true_reg = []
-	y_pred_reg_content = []
-	y_pred_reg_collab = []
-	y_pred_reg_hybrid = []
-
-	print("Evaluating models using actual algorithm functions...")
+	# Suppress Streamlit warnings during execution
+	import contextlib
 	
-	# Iterate over test set rows
-	for idx, row in test_df.iterrows():
-		if idx % 100 == 0:
-			print(f"Processing test sample {idx}/{len(test_df)}")
-			
-		user = row['User_ID']
-		movie_id = int(row['Movie_ID'])
-		true_rating = float(row['Rating'])
-		true_label = 1 if true_rating >= RATING_THRESHOLD else 0
-		title = movieid_to_title.get(movie_id)
+	@contextlib.contextmanager
+	def suppress_streamlit_warnings():
+		old_stderr = sys.stderr
+		sys.stderr = StringIO()
+		try:
+			yield
+		finally:
+			sys.stderr = old_stderr
+	
+	with suppress_streamlit_warnings():
+		merged, ratings = load_datasets()
+		genre_col, rating_col, year_col, votes_col = get_cols(merged)
+
+		# Filter ratings to those movies present in merged
+		present_ids = set(merged['Movie_ID'].unique())
+		ratings = ratings[ratings['Movie_ID'].isin(present_ids)].copy()
+
+		# Split BEFORE building models to avoid leakage
+		train_df, test_df = split_per_user(ratings)
+
+		# Build quick lookups
+		movieid_to_title = dict(merged[['Movie_ID', 'Series_Title']].values)
+		title_to_movieid = {v: k for k, v in movieid_to_title.items()}
+
+		# Predictions and ground truth
+		y_true_cls = []
+		y_pred_cls_content = []
+		y_pred_cls_collab = []
+		y_pred_cls_hybrid = []
+
+		y_true_reg = []
+		y_pred_reg_content = []
+		y_pred_reg_collab = []
+		y_pred_reg_hybrid = []
+
+		print("Evaluating models using actual algorithm functions...")
 		
-		if title is None:
-			continue
-
-		# 1. Content-Based Prediction using actual algorithm
-		try:
-			content_result = content_based_filtering_enhanced(merged, target_movie=title, top_n=1)
-			if content_result is not None and not content_result.empty:
-				# Get similarity score from content-based algorithm
-				content_features = create_content_features(merged)
-				target_idx = merged[merged['Series_Title'] == title].index[0]
-				target_vec = content_features[target_idx].reshape(1, -1)
-				sims = cosine_similarity(target_vec, content_features).flatten()
-				content_score = float(np.max(sims[sims < 1.0])) if len(sims[sims < 1.0]) > 0 else 0.0
-				content_rating_est = 2.0 + 8.0 * float(np.clip(content_score, 0.0, 1.0))
-			else:
-				content_rating_est = 5.0  # Default neutral rating
-		except Exception as e:
-			content_rating_est = 5.0
-
-		# 2. Collaborative Prediction using actual algorithm
-		try:
-			collab_result = collaborative_knn(merged, target_movie=title, top_n=1)
-			if collab_result is not None and not collab_result.empty:
-				# Get average user rating from collaborative algorithm
-				collab_score = float(collab_result.iloc[0]['Avg_User_Rating'])
-			else:
-				# Fallback to item mean from training data
-				item_ratings = train_df[train_df['Movie_ID'] == movie_id]['Rating']
-				collab_score = item_ratings.mean() if not item_ratings.empty else ratings['Rating'].mean()
-		except Exception as e:
-			collab_score = ratings['Rating'].mean()
-
-		# 3. Hybrid Prediction using actual algorithm
-		try:
-			hybrid_result, debug_info, score_breakdown = simple_hybrid_recommendation(
-				merged, target_movie=title, top_n=1, show_debug=False
-			)
-			if hybrid_result is not None and not hybrid_result.empty:
-				# Extract final score from hybrid algorithm
-				# Since hybrid doesn't return scores directly, we'll compute it
-				# using the same logic as the hybrid algorithm
-				content_score = content_rating_est / 10.0  # Normalize to 0-1
-				collab_score_norm = collab_score / 10.0  # Normalize to 0-1
+		# Iterate over test set rows
+		for idx, row in test_df.iterrows():
+			if idx % 100 == 0:
+				print(f"Processing test sample {idx}/{len(test_df)}")
 				
-				# Get popularity and recency scores (simplified)
-				pop_score = 0.5  # Default
-				rec_score = 0.5  # Default
-				
-				hybrid_pred = (ALPHA * content_score + BETA * collab_score_norm + 
-							  GAMMA * pop_score + DELTA * rec_score) * 10.0
-			else:
+			user = row['User_ID']
+			movie_id = int(row['Movie_ID'])
+			true_rating = float(row['Rating'])
+			true_label = 1 if true_rating >= RATING_THRESHOLD else 0
+			title = movieid_to_title.get(movie_id)
+			
+			if title is None:
+				continue
+
+			# 1. Content-Based Prediction using actual algorithm
+			try:
+				content_result = content_based_filtering_enhanced(merged, target_movie=title, top_n=1)
+				if content_result is not None and not content_result.empty:
+					# Get similarity score from content-based algorithm
+					content_features = create_content_features(merged)
+					target_idx = merged[merged['Series_Title'] == title].index[0]
+					target_vec = content_features[target_idx].reshape(1, -1)
+					sims = cosine_similarity(target_vec, content_features).flatten()
+					content_score = float(np.max(sims[sims < 1.0])) if len(sims[sims < 1.0]) > 0 else 0.0
+					content_rating_est = 2.0 + 8.0 * float(np.clip(content_score, 0.0, 1.0))
+				else:
+					content_rating_est = 5.0  # Default neutral rating
+			except Exception as e:
+				content_rating_est = 5.0
+
+			# 2. Collaborative Prediction using actual algorithm
+			try:
+				collab_result = collaborative_knn(merged, target_movie=title, top_n=1)
+				if collab_result is not None and not collab_result.empty:
+					# Get average user rating from collaborative algorithm
+					collab_score = float(collab_result.iloc[0]['Avg_User_Rating'])
+				else:
+					# Fallback to item mean from training data
+					item_ratings = train_df[train_df['Movie_ID'] == movie_id]['Rating']
+					collab_score = item_ratings.mean() if not item_ratings.empty else ratings['Rating'].mean()
+			except Exception as e:
+				collab_score = ratings['Rating'].mean()
+
+			# 3. Hybrid Prediction using actual algorithm
+			try:
+				hybrid_result, debug_info, score_breakdown = simple_hybrid_recommendation(
+					merged, target_movie=title, top_n=1, show_debug=False
+				)
+				if hybrid_result is not None and not hybrid_result.empty:
+					# Extract final score from hybrid algorithm
+					# Since hybrid doesn't return scores directly, we'll compute it
+					# using the same logic as the hybrid algorithm
+					content_score = content_rating_est / 10.0  # Normalize to 0-1
+					collab_score_norm = collab_score / 10.0  # Normalize to 0-1
+					
+					# Get popularity and recency scores (simplified)
+					pop_score = 0.5  # Default
+					rec_score = 0.5  # Default
+					
+					hybrid_pred = (ALPHA * content_score + BETA * collab_score_norm + 
+								  GAMMA * pop_score + DELTA * rec_score) * 10.0
+				else:
+					hybrid_pred = (content_rating_est + collab_score) / 2.0
+			except Exception as e:
 				hybrid_pred = (content_rating_est + collab_score) / 2.0
-		except Exception as e:
-			hybrid_pred = (content_rating_est + collab_score) / 2.0
 
-		# Clip to rating bounds
-		content_rating_est = float(np.clip(content_rating_est, 1.0, 10.0))
-		collab_score = float(np.clip(collab_score, 1.0, 10.0))
-		hybrid_pred = float(np.clip(hybrid_pred, 1.0, 10.0))
+			# Clip to rating bounds
+			content_rating_est = float(np.clip(content_rating_est, 1.0, 10.0))
+			collab_score = float(np.clip(collab_score, 1.0, 10.0))
+			hybrid_pred = float(np.clip(hybrid_pred, 1.0, 10.0))
 
-		# Collect regression targets
-		y_true_reg.append(true_rating)
-		y_pred_reg_content.append(content_rating_est)
-		y_pred_reg_collab.append(collab_score)
-		y_pred_reg_hybrid.append(hybrid_pred)
+			# Collect regression targets
+			y_true_reg.append(true_rating)
+			y_pred_reg_content.append(content_rating_est)
+			y_pred_reg_collab.append(collab_score)
+			y_pred_reg_hybrid.append(hybrid_pred)
 
-		# Classification label predictions
-		y_true_cls.append(true_label)
-		y_pred_cls_content.append(1 if content_rating_est >= RATING_THRESHOLD else 0)
-		y_pred_cls_collab.append(1 if collab_score >= RATING_THRESHOLD else 0)
-		y_pred_cls_hybrid.append(1 if hybrid_pred >= RATING_THRESHOLD else 0)
+			# Classification label predictions
+			y_true_cls.append(true_label)
+			y_pred_cls_content.append(1 if content_rating_est >= RATING_THRESHOLD else 0)
+			y_pred_cls_collab.append(1 if collab_score >= RATING_THRESHOLD else 0)
+			y_pred_cls_hybrid.append(1 if hybrid_pred >= RATING_THRESHOLD else 0)
 
-	# Compute metrics
-	def compute_classification_metrics(y_true, y_pred):
-		return {
-			'precision': precision_score(y_true, y_pred, zero_division=0),
-			'recall': recall_score(y_true, y_pred, zero_division=0),
-			'f1': f1_score(y_true, y_pred, zero_division=0),
-			'accuracy': accuracy_score(y_true, y_pred),
-			'report': classification_report(y_true, y_pred, target_names=['negative', 'positive'], zero_division=0)
+		# Compute metrics
+		def compute_classification_metrics(y_true, y_pred):
+			return {
+				'precision': precision_score(y_true, y_pred, zero_division=0),
+				'recall': recall_score(y_true, y_pred, zero_division=0),
+				'f1': f1_score(y_true, y_pred, zero_division=0),
+				'accuracy': accuracy_score(y_true, y_pred),
+				'report': classification_report(y_true, y_pred, target_names=['negative', 'positive'], zero_division=0)
+			}
+
+		def compute_regression_metrics(y_true, y_pred):
+			mse = mean_squared_error(y_true, y_pred)
+			return {'mse': mse, 'rmse': float(np.sqrt(mse))}
+
+		results = {}
+		results['Content-Based'] = {
+			**compute_classification_metrics(y_true_cls, y_pred_cls_content),
+			**compute_regression_metrics(y_true_reg, y_pred_reg_content)
+		}
+		results['Collaborative'] = {
+			**compute_classification_metrics(y_true_cls, y_pred_cls_collab),
+			**compute_regression_metrics(y_true_reg, y_pred_reg_collab)
+		}
+		results['Hybrid'] = {
+			**compute_classification_metrics(y_true_cls, y_pred_cls_hybrid),
+			**compute_regression_metrics(y_true_reg, y_pred_reg_hybrid)
 		}
 
-	def compute_regression_metrics(y_true, y_pred):
-		mse = mean_squared_error(y_true, y_pred)
-		return {'mse': mse, 'rmse': float(np.sqrt(mse))}
+		# Display
+		print('\nModel: Content-Based')
+		print(f"Accuracy: {results['Content-Based']['accuracy']:.3f}")
+		print(results['Content-Based']['report'])
+		print('\nModel: Collaborative')
+		print(f"Accuracy: {results['Collaborative']['accuracy']:.3f}")
+		print(results['Collaborative']['report'])
+		print('\nModel: Hybrid')
+		print(f"Accuracy: {results['Hybrid']['accuracy']:.3f}")
+		print(results['Hybrid']['report'])
 
-	results = {}
-	results['Content-Based'] = {
-		**compute_classification_metrics(y_true_cls, y_pred_cls_content),
-		**compute_regression_metrics(y_true_reg, y_pred_reg_content)
-	}
-	results['Collaborative'] = {
-		**compute_classification_metrics(y_true_cls, y_pred_cls_collab),
-		**compute_regression_metrics(y_true_reg, y_pred_reg_collab)
-	}
-	results['Hybrid'] = {
-		**compute_classification_metrics(y_true_cls, y_pred_cls_hybrid),
-		**compute_regression_metrics(y_true_reg, y_pred_reg_hybrid)
-	}
-
-	# Display
-	print('\nModel: Content-Based')
-	print(f"Accuracy: {results['Content-Based']['accuracy']:.3f}")
-	print(results['Content-Based']['report'])
-	print('\nModel: Collaborative')
-	print(f"Accuracy: {results['Collaborative']['accuracy']:.3f}")
-	print(results['Collaborative']['report'])
-	print('\nModel: Hybrid')
-	print(f"Accuracy: {results['Hybrid']['accuracy']:.3f}")
-	print(results['Hybrid']['report'])
-
-	# Summary table
-	summary_rows = []
-	for name in ['Collaborative', 'Content-Based', 'Hybrid']:
-		row = {
-			'Method Used': name,
-			'Precision': round(results[name]['precision'], 2),
-			'Recall': round(results[name]['recall'], 2),
-			'RMSE': round(results[name]['rmse'], 2),
-			'Notes': (
-				'Worked well with dense ratings' if name == 'Collaborative' else
-				'Good with rich metadata' if name == 'Content-Based' else
-				'Best balance between both'
-			)
-		}
-		summary_rows.append(row)
-	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'RMSE', 'Notes'])
-	print('\nComparison Table:')
-	print(summary_df.to_string(index=False))
+		# Summary table
+		summary_rows = []
+		for name in ['Collaborative', 'Content-Based', 'Hybrid']:
+			row = {
+				'Method Used': name,
+				'Precision': round(results[name]['precision'], 2),
+				'Recall': round(results[name]['recall'], 2),
+				'RMSE': round(results[name]['rmse'], 2),
+				'Notes': (
+					'Worked well with dense ratings' if name == 'Collaborative' else
+					'Good with rich metadata' if name == 'Content-Based' else
+					'Best balance between both'
+				)
+			}
+			summary_rows.append(row)
+		summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'RMSE', 'Notes'])
+		print('\nComparison Table:')
+		print(summary_df.to_string(index=False))
 
 
 if __name__ == '__main__':
