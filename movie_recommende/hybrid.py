@@ -225,7 +225,12 @@ def simple_hybrid_recommendation(merged_df, target_movie=None, genre=None, top_n
     return final_result, debug_info, score_breakdown
 
 
-# Remove the @st.cache_data decorator to avoid caching issues
+# Force clear Streamlit cache
+try:
+    st.cache_data.clear()
+except:
+    pass
+
 def smart_hybrid_recommendation(merged_df, target_movie=None, genre=None, top_n=8, show_debug=False):
-    """Non-cached wrapper for hybrid recommendation"""
+    """Non-cached hybrid recommendation - returns (results, debug_info, score_breakdown)"""
     return simple_hybrid_recommendation(merged_df, target_movie, genre, top_n, show_debug)
