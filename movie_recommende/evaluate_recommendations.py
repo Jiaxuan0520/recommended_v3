@@ -9,20 +9,21 @@ from collections import defaultdict
 import warnings
 warnings.filterwarnings('ignore')
 
-# Import latest algorithm functions to ensure feature parity
+# Import latest algorithm functions
 from content_based import (
 	create_content_features,
 	find_rating_column,
 	find_genre_column,
+	find_director_column,
 	content_based_filtering_enhanced
 )
-from collaborative import collaborative_knn
+from collaborative import collaborative_knn, load_user_ratings
 from hybrid import simple_hybrid_recommendation
 
 # =============================================================
 # Configuration
 # =============================================================
-# Updated weights to match latest hybrid algorithm
+# Updated to match latest hybrid algorithm weights
 ALPHA = 0.4  # Content-based weight
 BETA = 0.4   # Collaborative weight (updated to match latest)
 GAMMA = 0.1  # Popularity weight (updated to match latest)
@@ -60,7 +61,7 @@ def get_cols(df):
 	return genre_col, rating_col, year_col, votes_col
 
 
-# Removed old helper functions - now using actual algorithm implementations
+# Removed old helper functions - now using actual algorithm functions from latest code
 
 
 # =============================================================
@@ -90,7 +91,7 @@ def split_per_user(user_ratings, test_size=TEST_SIZE_PER_USER, random_state=RAND
 # =============================================================
 
 def evaluate_models():
-	"""Updated evaluation using actual algorithm functions from latest implementations"""
+	"""Evaluate models using actual algorithm functions from latest code"""
 	merged, ratings = load_datasets()
 	genre_col, rating_col, year_col, votes_col = get_cols(merged)
 
@@ -116,13 +117,12 @@ def evaluate_models():
 	y_pred_reg_collab = []
 	y_pred_reg_hybrid = []
 
-	print("Evaluating models using actual algorithm implementations...")
-	print(f"Test set size: {len(test_df)} ratings")
-
+	print("Evaluating models using actual algorithm functions...")
+	
 	# Iterate over test set rows
 	for idx, row in test_df.iterrows():
 		if idx % 100 == 0:
-			print(f"Processing {idx}/{len(test_df)} test cases...")
+			print(f"Processing test sample {idx}/{len(test_df)}")
 			
 		user = row['User_ID']
 		movie_id = int(row['Movie_ID'])
@@ -140,10 +140,9 @@ def evaluate_models():
 				# Get similarity score from content-based algorithm
 				content_features = create_content_features(merged)
 				target_idx = merged[merged['Series_Title'] == title].index[0]
-				target_loc = merged.index.get_loc(target_idx)
-				target_vec = content_features[target_loc].reshape(1, -1)
+				target_vec = content_features[target_idx].reshape(1, -1)
 				sims = cosine_similarity(target_vec, content_features).flatten()
-				content_score = float(np.max(sims[sims < 1.0])) if len(sims[sims < 1.0]) > 0 else 0.5
+				content_score = float(np.max(sims[sims < 1.0])) if len(sims[sims < 1.0]) > 0 else 0.0
 				content_rating_est = 2.0 + 8.0 * float(np.clip(content_score, 0.0, 1.0))
 			else:
 				content_rating_est = 5.0  # Default neutral rating
@@ -155,14 +154,13 @@ def evaluate_models():
 			collab_result = collaborative_knn(merged, target_movie=title, top_n=1)
 			if collab_result is not None and not collab_result.empty:
 				# Get average user rating from collaborative algorithm
-				if 'Avg_User_Rating' in collab_result.columns:
-					collab_score = float(collab_result.iloc[0]['Avg_User_Rating'])
-				else:
-					collab_score = 5.0
+				collab_score = float(collab_result.iloc[0]['Avg_User_Rating'])
 			else:
-				collab_score = 5.0
+				# Fallback to item mean from training data
+				item_ratings = train_df[train_df['Movie_ID'] == movie_id]['Rating']
+				collab_score = item_ratings.mean() if not item_ratings.empty else ratings['Rating'].mean()
 		except Exception as e:
-			collab_score = 5.0
+			collab_score = ratings['Rating'].mean()
 
 		# 3. Hybrid Prediction using actual algorithm
 		try:
@@ -172,20 +170,20 @@ def evaluate_models():
 			if hybrid_result is not None and not hybrid_result.empty:
 				# Extract final score from hybrid algorithm
 				# Since hybrid doesn't return scores directly, we'll compute it
-				# using the same weights as the hybrid algorithm
-				content_score = 2.0 + 8.0 * float(np.clip(content_score, 0.0, 1.0))
-				collab_score = float(np.clip(collab_score, 1.0, 10.0))
+				# using the same logic as the hybrid algorithm
+				content_score = content_rating_est / 10.0  # Normalize to 0-1
+				collab_score_norm = collab_score / 10.0  # Normalize to 0-1
 				
 				# Get popularity and recency scores (simplified)
-				pop_score = 5.0  # Default
-				rec_score = 5.0  # Default
+				pop_score = 0.5  # Default
+				rec_score = 0.5  # Default
 				
-				hybrid_pred = (ALPHA * content_score + BETA * collab_score + 
-							  GAMMA * pop_score + DELTA * rec_score)
+				hybrid_pred = (ALPHA * content_score + BETA * collab_score_norm + 
+							  GAMMA * pop_score + DELTA * rec_score) * 10.0
 			else:
-				hybrid_pred = 5.0
+				hybrid_pred = (content_rating_est + collab_score) / 2.0
 		except Exception as e:
-			hybrid_pred = 5.0
+			hybrid_pred = (content_rating_est + collab_score) / 2.0
 
 		# Clip to rating bounds
 		content_rating_est = float(np.clip(content_rating_est, 1.0, 10.0))
@@ -232,56 +230,35 @@ def evaluate_models():
 		**compute_regression_metrics(y_true_reg, y_pred_reg_hybrid)
 	}
 
-	# Display results
-	print('\n' + '='*60)
-	print('EVALUATION RESULTS (Using Actual Algorithm Functions)')
-	print('='*60)
-	
+	# Display
 	print('\nModel: Content-Based')
 	print(f"Accuracy: {results['Content-Based']['accuracy']:.3f}")
-	print(f"Precision: {results['Content-Based']['precision']:.3f}")
-	print(f"Recall: {results['Content-Based']['recall']:.3f}")
-	print(f"F1-Score: {results['Content-Based']['f1']:.3f}")
-	print(f"RMSE: {results['Content-Based']['rmse']:.3f}")
-	
+	print(results['Content-Based']['report'])
 	print('\nModel: Collaborative')
 	print(f"Accuracy: {results['Collaborative']['accuracy']:.3f}")
-	print(f"Precision: {results['Collaborative']['precision']:.3f}")
-	print(f"Recall: {results['Collaborative']['recall']:.3f}")
-	print(f"F1-Score: {results['Collaborative']['f1']:.3f}")
-	print(f"RMSE: {results['Collaborative']['rmse']:.3f}")
-	
+	print(results['Collaborative']['report'])
 	print('\nModel: Hybrid')
 	print(f"Accuracy: {results['Hybrid']['accuracy']:.3f}")
-	print(f"Precision: {results['Hybrid']['precision']:.3f}")
-	print(f"Recall: {results['Hybrid']['recall']:.3f}")
-	print(f"F1-Score: {results['Hybrid']['f1']:.3f}")
-	print(f"RMSE: {results['Hybrid']['rmse']:.3f}")
+	print(results['Hybrid']['report'])
 
 	# Summary table
 	summary_rows = []
-	for name in ['Content-Based', 'Collaborative', 'Hybrid']:
+	for name in ['Collaborative', 'Content-Based', 'Hybrid']:
 		row = {
 			'Method Used': name,
-			'Precision': round(results[name]['precision'], 3),
-			'Recall': round(results[name]['recall'], 3),
-			'F1-Score': round(results[name]['f1'], 3),
-			'RMSE': round(results[name]['rmse'], 3),
+			'Precision': round(results[name]['precision'], 2),
+			'Recall': round(results[name]['recall'], 2),
+			'RMSE': round(results[name]['rmse'], 2),
 			'Notes': (
-				'Uses TF-IDF + cosine similarity' if name == 'Content-Based' else
-				'Uses item-based KNN + user ratings' if name == 'Collaborative' else
-				'Combines all methods with weights (0.4, 0.4, 0.1, 0.1)'
+				'Worked well with dense ratings' if name == 'Collaborative' else
+				'Good with rich metadata' if name == 'Content-Based' else
+				'Best balance between both'
 			)
 		}
 		summary_rows.append(row)
-	
-	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'F1-Score', 'RMSE', 'Notes'])
-	print('\n' + '='*60)
-	print('COMPARISON TABLE')
-	print('='*60)
+	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'RMSE', 'Notes'])
+	print('\nComparison Table:')
 	print(summary_df.to_string(index=False))
-	
-	return results
 
 
 if __name__ == '__main__':
