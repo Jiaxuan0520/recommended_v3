@@ -68,7 +68,7 @@ def find_similar_titles(input_title, titles_list, cutoff=0.6):
 
 @st.cache_data
 def create_content_features(merged_df):
-    """Create enhanced TF-IDF features using multiple movie attributes with weights"""
+    """Create enhanced TF-IDF features using multiple movie attributes with optimized weights"""
 
     genre_col = find_genre_column(merged_df)
     rating_col = find_rating_column(merged_df)
