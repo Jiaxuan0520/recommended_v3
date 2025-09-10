@@ -14,7 +14,6 @@ from content_based import (
 	create_content_features,
 	find_rating_column,
 	find_genre_column,
-	find_director_column,
 	content_based_filtering_enhanced
 )
 from collaborative import collaborative_knn, load_user_ratings
