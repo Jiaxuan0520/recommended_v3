@@ -30,7 +30,7 @@ from content_based import (
 	content_based_filtering_enhanced
 )
 from collaborative import collaborative_knn, load_user_ratings
-from hybrid import simple_hybrid_recommendation, get_hybrid_score
+from hybrid import simple_hybrid_recommendation
 
 # Restore stderr
 sys.stderr = old_stderr
@@ -133,6 +133,11 @@ def evaluate_models():
 		y_pred_reg_hybrid = []
 
 		print("Evaluating models using actual algorithm functions...")
+		print("Using improved prediction methods:")
+		print("- Content-Based: Average of top 3 content similarities")
+		print("- Collaborative: Weighted average of top 3 similar movies by user ratings")
+		print("- Hybrid: Average of top 5 hybrid algorithm scores")
+		print()
 		
 		# Iterate over test set rows
 		for idx, row in test_df.iterrows():
@@ -150,15 +155,24 @@ def evaluate_models():
 
 			# 1. Content-Based Prediction using actual algorithm
 			try:
-				content_result = content_based_filtering_enhanced(merged, target_movie=title, top_n=1)
+				content_result = content_based_filtering_enhanced(merged, target_movie=title, top_n=3)
 				if content_result is not None and not content_result.empty:
-					# Get similarity score from content-based algorithm
+					# Get similarity scores from content-based algorithm
 					content_features = create_content_features(merged)
 					target_idx = merged[merged['Series_Title'] == title].index[0]
 					target_vec = content_features[target_idx].reshape(1, -1)
 					sims = cosine_similarity(target_vec, content_features).flatten()
-					content_score = float(np.max(sims[sims < 1.0])) if len(sims[sims < 1.0]) > 0 else 0.0
-					content_rating_est = 2.0 + 8.0 * float(np.clip(content_score, 0.0, 1.0))
+					
+					# Get top similar movies (excluding self)
+					valid_sims = sims[sims < 1.0]
+					if len(valid_sims) > 0:
+						top_sims = np.sort(valid_sims)[-3:]  # Top 3 similarities
+						content_score = float(np.mean(top_sims))  # Average of top similarities
+					else:
+						content_score = 0.0
+					
+					# Convert similarity to rating (1-10 scale)
+					content_rating_est = 1.0 + 9.0 * float(np.clip(content_score, 0.0, 1.0))
 				else:
 					content_rating_est = 5.0  # Default neutral rating
 			except Exception as e:
@@ -166,10 +180,16 @@ def evaluate_models():
 
 			# 2. Collaborative Prediction using actual algorithm
 			try:
-				collab_result = collaborative_knn(merged, target_movie=title, top_n=1)
+				collab_result = collaborative_knn(merged, target_movie=title, top_n=3)
 				if collab_result is not None and not collab_result.empty:
-					# Get average user rating from collaborative algorithm
-					collab_score = float(collab_result.iloc[0]['Avg_User_Rating'])
+					# Get average user rating from top similar movies
+					avg_ratings = collab_result['Avg_User_Rating'].values
+					similarities = collab_result['Similarity'].values if 'Similarity' in collab_result.columns else np.ones(len(avg_ratings))
+					
+					# Weight by similarity for better prediction
+					weighted_sum = np.sum(avg_ratings * similarities)
+					weight_sum = np.sum(similarities)
+					collab_score = weighted_sum / weight_sum if weight_sum > 0 else np.mean(avg_ratings)
 				else:
 					# Fallback to item mean from training data
 					item_ratings = train_df[train_df['Movie_ID'] == movie_id]['Rating']
@@ -179,12 +199,27 @@ def evaluate_models():
 
 			# 3. Hybrid Prediction using actual algorithm
 			try:
-				# Use the actual hybrid algorithm to get the real hybrid score
-				hybrid_score_01 = get_hybrid_score(merged, title)  # Returns 0-1 scale
-				hybrid_pred = 1.0 + 9.0 * hybrid_score_01  # Convert to 1-10 scale
+				# Use hybrid algorithm to find similar movies, then predict rating based on their scores
+				hybrid_result, debug_info, score_breakdown = simple_hybrid_recommendation(
+					merged, target_movie=title, top_n=5, show_debug=True
+				)
+				
+				if hybrid_result is not None and not hybrid_result.empty and score_breakdown is not None:
+					# Get the hybrid scores for similar movies
+					hybrid_scores = []
+					for breakdown in score_breakdown:
+						hybrid_scores.append(float(breakdown['Final Score']))
+					
+					# Use the average of top hybrid scores as prediction
+					# Convert from 0-1 scale to 1-10 scale
+					avg_hybrid_score = np.mean(hybrid_scores) if hybrid_scores else 0.5
+					hybrid_pred = 1.0 + 9.0 * avg_hybrid_score
+				else:
+					# Fallback: use weighted combination of content and collaborative
+					hybrid_pred = (0.4 * content_rating_est + 0.6 * collab_score)
 			except Exception as e:
-				# Fallback: use simple average if hybrid algorithm fails
-				hybrid_pred = (content_rating_est + collab_score) / 2.0
+				# Fallback: use weighted combination if hybrid algorithm fails
+				hybrid_pred = (0.4 * content_rating_est + 0.6 * collab_score)
 
 			# Clip to rating bounds
 			content_rating_est = float(np.clip(content_rating_est, 1.0, 10.0))
@@ -202,6 +237,15 @@ def evaluate_models():
 			y_pred_cls_content.append(1 if content_rating_est >= RATING_THRESHOLD else 0)
 			y_pred_cls_collab.append(1 if collab_score >= RATING_THRESHOLD else 0)
 			y_pred_cls_hybrid.append(1 if hybrid_pred >= RATING_THRESHOLD else 0)
+			
+			# Debug: Show first few predictions
+			if idx < 5:
+				print(f"Sample {idx}: {title}")
+				print(f"  True: {true_rating:.2f} (label: {true_label})")
+				print(f"  Content: {content_rating_est:.2f} (label: {1 if content_rating_est >= RATING_THRESHOLD else 0})")
+				print(f"  Collab: {collab_score:.2f} (label: {1 if collab_score >= RATING_THRESHOLD else 0})")
+				print(f"  Hybrid: {hybrid_pred:.2f} (label: {1 if hybrid_pred >= RATING_THRESHOLD else 0})")
+				print()
 
 		# Compute metrics
 		def compute_classification_metrics(y_true, y_pred):
