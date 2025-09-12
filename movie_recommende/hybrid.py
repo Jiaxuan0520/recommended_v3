@@ -231,26 +231,3 @@ def smart_hybrid_recommendation(merged_df, target_movie=None, genre=None, top_n=
     return simple_hybrid_recommendation(merged_df, target_movie, genre, top_n, show_debug)
 
 
-def get_hybrid_score(merged_df, target_movie):
-    """
-    Get the actual hybrid score for a specific movie using the real hybrid algorithm.
-    Returns the final hybrid score (0-1 scale) for the target movie.
-    """
-    if target_movie is None or not isinstance(target_movie, str) or target_movie.strip() == '':
-        return 0.5  # Default neutral score
-    
-    try:
-        # Get the hybrid recommendation with debug info to access final scores
-        hybrid_result, debug_info, score_breakdown = simple_hybrid_recommendation(
-            merged_df, target_movie=target_movie, top_n=1, show_debug=True
-        )
-        
-        if score_breakdown and len(score_breakdown) > 0:
-            # Return the actual final score from the hybrid algorithm
-            return float(score_breakdown[0]['Final Score'])
-        else:
-            # Fallback: compute a simple hybrid score
-            return 0.5
-    except Exception:
-        # Fallback: return neutral score if anything fails
-        return 0.5
