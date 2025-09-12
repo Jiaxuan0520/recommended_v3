@@ -82,14 +82,14 @@ def create_content_features(merged_df):
 
     # Enhanced weights for better feature balance
     WEIGHTS = {
-        'title': 2,           # Increased from 1
-        'genre': 10,          # Increased from 8
-        'rating': 3,          # Increased from 2
-        'year': 2,            # New: Year/decade features
-        'director': 3,        # New: Director features
-        'overview': 5,        # New: Plot/overview text
-        'runtime': 1,         # New: Runtime categories
-        'certificate': 1,     # New: Age rating
+        'title': 2,           
+        'genre': 10,         
+        'rating': 3,          
+        'year': 2,           
+        'director': 3,        
+        'overview': 5,       
+        'runtime': 1,         
+        'certificate': 1,     
     }
 
     def build_row_text(row: pd.Series) -> str:

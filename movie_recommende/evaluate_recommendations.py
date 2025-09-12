@@ -30,7 +30,7 @@ from content_based import (
 	content_based_filtering_enhanced
 )
 from collaborative import collaborative_knn, load_user_ratings
-from hybrid import simple_hybrid_recommendation
+from hybrid import simple_hybrid_recommendation, get_hybrid_score
 
 # Restore stderr
 sys.stderr = old_stderr
@@ -177,69 +177,13 @@ def evaluate_models():
 			except Exception as e:
 				collab_score = ratings['Rating'].mean()
 
-			# 3. Hybrid Prediction using actual algorithm scores
+			# 3. Hybrid Prediction using actual algorithm
 			try:
-				# Get individual scores using the same method as hybrid algorithm
-				
-				# 3a. Content score (same as hybrid algorithm)
-				content_features = create_content_features(merged)
-				target_idx = merged[merged['Series_Title'] == title].index[0]
-				target_vec = content_features[target_idx].reshape(1, -1)
-				sims = cosine_similarity(target_vec, content_features).flatten()
-				# Get max similarity excluding self (similarity = 1.0)
-				content_sim = float(np.max(sims[sims < 1.0])) if len(sims[sims < 1.0]) > 0 else 0.0
-				
-				# 3b. Collaborative score (same as hybrid algorithm)
-				collab_result = collaborative_knn(merged, target_movie=title, top_n=50, k_neighbors=50)
-				if collab_result is not None and not collab_result.empty and 'Similarity' in collab_result.columns:
-					# Get max similarity from collaborative results
-					collab_sim = float(collab_result['Similarity'].max())
-				else:
-					collab_sim = 0.0
-				
-				# 3c. Popularity score (same as hybrid algorithm)
-				movie_data = merged[merged['Series_Title'] == title].iloc[0]
-				rating = movie_data.get(rating_col, 7.0)
-				votes = movie_data.get(votes_col, 1000)
-				
-				if pd.isna(rating):
-					rating = 7.0
-				
-				try:
-					if isinstance(votes, str):
-						votes_val = float(votes.replace(',', ''))
-					else:
-						votes_val = float(votes) if pd.notna(votes) else 1000.0
-				except:
-					votes_val = 1000.0
-				
-				normalized_rating = float(rating) / 10.0
-				log_votes = np.log10(max(votes_val, 1.0))
-				pop_score = (normalized_rating * 0.7) + (min(log_votes / 6.0, 1.0) * 0.3)
-				pop_score = float(np.clip(pop_score, 0.0, 1.0))
-				
-				# 3d. Recency score (same as hybrid algorithm)
-				current_year = pd.Timestamp.now().year
-				year = movie_data.get(year_col, 2000)
-				
-				try:
-					if isinstance(year, str):
-						year_val = int(year.split()[0].strip('()'))
-					else:
-						year_val = int(year) if pd.notna(year) else 2000
-				except:
-					year_val = 2000
-				
-				years_ago = max(0, current_year - year_val)
-				rec_score = np.exp(-years_ago / 15.0)
-				rec_score = float(np.clip(rec_score, 0.0, 1.0))
-				
-				# 3e. Apply hybrid formula: 0.4×Content + 0.4×Collaborative + 0.1×Popularity + 0.1×Recency
-				hybrid_pred = (ALPHA * content_sim + BETA * collab_sim + 
-							  GAMMA * pop_score + DELTA * rec_score) * 10.0
-				
+				# Use the actual hybrid algorithm to get the real hybrid score
+				hybrid_score_01 = get_hybrid_score(merged, title)  # Returns 0-1 scale
+				hybrid_pred = 1.0 + 9.0 * hybrid_score_01  # Convert to 1-10 scale
 			except Exception as e:
-				# Fallback to simple average if calculation fails
+				# Fallback: use simple average if hybrid algorithm fails
 				hybrid_pred = (content_rating_est + collab_score) / 2.0
 
 			# Clip to rating bounds

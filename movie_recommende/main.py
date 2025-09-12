@@ -10,9 +10,8 @@ from hybrid import smart_hybrid_recommendation
 
 warnings.filterwarnings('ignore')
 
-# =========================
+
 # Streamlit Configuration
-# =========================
 st.set_page_config(
     page_title="🎬 Movie Recommender",
     page_icon="🎬",
@@ -23,9 +22,8 @@ st.set_page_config(
 st.title("🎬 Movie Recommendation System")
 st.markdown("---")
 
-# =========================
+
 # GitHub CSV Loading Functions
-# =========================
 @st.cache_data
 def load_csv_from_github(file_url, file_name):
     """Load CSV file from GitHub repository - silent version"""
@@ -220,9 +218,7 @@ def display_movie_posters(results_df, merged_df):
                 # Add some spacing between movies
                 st.markdown("---")
 
-# =========================
-# Main Application
-# =========================
+# Main
 def main():
     # Load data from GitHub repository first, then fallback to local
     merged_df, user_ratings_df, error = load_and_prepare_data()
