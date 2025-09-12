@@ -177,72 +177,38 @@ def evaluate_models():
 			except Exception as e:
 				collab_score = ratings['Rating'].mean()
 
-			# 3. Hybrid Prediction using actual algorithm logic
+			# 3. Hybrid Prediction using actual algorithm
 			try:
-				# Calculate hybrid score for target movie using the same logic as hybrid algorithm
-				# We need to compute content, collaborative, popularity, and recency scores for the target movie
-				
-				# Content score (already calculated above, normalize to 0-1)
-				content_score_norm = (content_rating_est - 2.0) / 8.0  # Convert from 2-10 scale to 0-1
-				content_score_norm = np.clip(content_score_norm, 0.0, 1.0)
-				
-				# Collaborative score (already calculated above, normalize to 0-1) 
-				collab_score_norm = (collab_score - 1.0) / 9.0  # Convert from 1-10 scale to 0-1
-				collab_score_norm = np.clip(collab_score_norm, 0.0, 1.0)
-				
-				# Popularity score for target movie (using same logic as hybrid algorithm)
-				pop_score = 0.5  # Default fallback
-				try:
-					rating_val = merged[merged['Series_Title'] == title][rating_col].iloc[0]
-					votes_val = merged[merged['Series_Title'] == title][votes_col].iloc[0]
-					
-					if pd.notna(rating_val):
-						rating_val = float(rating_val)
+				hybrid_result, debug_info, score_breakdown = simple_hybrid_recommendation(
+					merged, target_movie=title, top_n=1, show_debug=True
+				)
+				if hybrid_result is not None and not hybrid_result.empty and score_breakdown is not None:
+					# Extract the actual final score from hybrid algorithm's score breakdown
+					hybrid_pred = float(score_breakdown[0]['Final Score'])
+					# Convert from 0-1 scale to 1-10 rating scale
+					hybrid_pred = 1.0 + 9.0 * hybrid_pred
+				else:
+					# Fallback: use the hybrid algorithm's internal scoring
+					# Call hybrid with debug=True to get score breakdown
+					_, _, fallback_breakdown = simple_hybrid_recommendation(
+						merged, target_movie=title, top_n=5, show_debug=True
+					)
+					if fallback_breakdown is not None and len(fallback_breakdown) > 0:
+						# Find the target movie in the breakdown
+						target_found = False
+						for item in fallback_breakdown:
+							if item['Movie'] == title:
+								hybrid_pred = 1.0 + 9.0 * float(item['Final Score'])
+								target_found = True
+								break
+						if not target_found:
+							# Use the top recommendation's score as proxy
+							hybrid_pred = 1.0 + 9.0 * float(fallback_breakdown[0]['Final Score'])
 					else:
-						rating_val = 7.0
-					
-					if pd.notna(votes_val):
-						if isinstance(votes_val, str):
-							votes_val = float(votes_val.replace(',', ''))
-						else:
-							votes_val = float(votes_val)
-					else:
-						votes_val = 1000.0
-					
-					normalized_rating = float(rating_val) / 10.0
-					log_votes = np.log10(max(votes_val, 1.0))
-					pop_score = (normalized_rating * 0.7) + (min(log_votes / 6.0, 1.0) * 0.3)
-					pop_score = float(np.clip(pop_score, 0.0, 1.0))
-				except:
-					pop_score = 0.5
-				
-				# Recency score for target movie (using same logic as hybrid algorithm)
-				rec_score = 0.5  # Default fallback
-				try:
-					current_year = pd.Timestamp.now().year
-					year_val = merged[merged['Series_Title'] == title][year_col].iloc[0]
-					
-					if isinstance(year_val, str):
-						year_val = int(year_val.split()[0].strip('()'))
-					else:
-						year_val = int(year_val) if pd.notna(year_val) else 2000
-					
-					years_ago = max(0, current_year - year_val)
-					rec_score = np.exp(-years_ago / 15.0)
-					rec_score = float(np.clip(rec_score, 0.0, 1.0))
-				except:
-					rec_score = 0.5
-				
-				# Apply hybrid formula: 0.4×Content + 0.4×Collaborative + 0.1×Popularity + 0.1×Recency
-				hybrid_score = (ALPHA * content_score_norm + 
-							   BETA * collab_score_norm + 
-							   GAMMA * pop_score + 
-							   DELTA * rec_score)
-				
-				# Convert back to 1-10 rating scale
-				hybrid_pred = 1.0 + 9.0 * hybrid_score
-				
+						# Last resort: simple average
+						hybrid_pred = (content_rating_est + collab_score) / 2.0
 			except Exception as e:
+				# Last resort fallback
 				hybrid_pred = (content_rating_est + collab_score) / 2.0
 
 			# Clip to rating bounds
